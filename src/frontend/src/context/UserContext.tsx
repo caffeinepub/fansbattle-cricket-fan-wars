@@ -14,6 +14,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { toast } from "sonner";
@@ -47,23 +48,37 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const refreshUserData = useCallback(() => setRefreshKey((k) => k + 1), []);
+  const initDone = useRef(false);
 
-  // On mount: check if we already have a deviceId stored
+  // On mount: always auto-initialize the user (create if not exists).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional mount-only effect
   useEffect(() => {
-    const stored = localStorage.getItem("fansbattle_device_id");
-    if (stored) {
-      // Auto-load the existing user
-      createOrGetUserByDeviceId(stored)
-        .then((data) => {
-          setUserId(stored);
-          setUserData(data);
-          setCoins(data.coins);
-        })
-        .catch((e) => console.error("Error loading user", e))
-        .finally(() => setLoading(false));
-    } else {
+    if (initDone.current) return;
+    initDone.current = true;
+
+    const deviceId = getOrCreateDeviceId();
+
+    // Safety timeout — never block the app more than 8 seconds
+    const timeout = setTimeout(() => {
       setLoading(false);
-    }
+    }, 8000);
+
+    createOrGetUserByDeviceId(deviceId)
+      .then((data) => {
+        setUserId(deviceId);
+        setUserData(data);
+        setCoins(data.coins);
+      })
+      .catch((e) => {
+        console.error("Error initializing user", e);
+        // Still unblock the app — show login screen as fallback
+      })
+      .finally(() => {
+        clearTimeout(timeout);
+        setLoading(false);
+      });
+
+    return () => clearTimeout(timeout);
   }, []);
 
   // Real-time Firestore subscription
@@ -83,6 +98,7 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
     return unsub;
   }, [userId, refreshKey]);
 
+  // startPlaying is kept for manual re-trigger (e.g. after logout)
   const startPlaying = useCallback(async () => {
     const deviceId = getOrCreateDeviceId();
     const data = await createOrGetUserByDeviceId(deviceId);

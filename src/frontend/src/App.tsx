@@ -19,7 +19,7 @@ import { toast } from "sonner";
 
 export type TabId = "live" | "vote" | "sticker" | "friends" | "shop" | "admin";
 
-type AppState = "splash" | "login" | "main";
+type AppState = "splash" | "loading" | "login" | "main";
 
 const STREAK_REWARDS: Record<number, number> = {
   1: 20,
@@ -66,20 +66,26 @@ function AppInner() {
   const [showInterstitial, setShowInterstitial] = useState(false);
   const [showRewardedAd, setShowRewardedAd] = useState(false);
 
-  // After splash, determine state
-  useEffect(() => {
-    if (appState !== "splash" && !loading) {
-      if (!userId) {
-        setAppState("login");
-      } else {
-        setAppState("main");
-      }
+  // After splash completes, move to loading/main/login depending on state
+  const handleSplashComplete = () => {
+    if (loading) {
+      // Still fetching user — show a brief loading state instead of blocking
+      setAppState("loading");
+    } else {
+      setAppState(userId ? "main" : "login");
     }
-  }, [appState, userId, loading]);
+  };
 
-  // When userId becomes set (after startPlaying), go to main
+  // When loading finishes (after splash), transition out of loading state
   useEffect(() => {
-    if (userId && appState === "login") {
+    if (appState === "loading" && !loading) {
+      setAppState(userId ? "main" : "login");
+    }
+  }, [appState, loading, userId]);
+
+  // When userId becomes set (e.g. after startPlaying on login screen), go to main
+  useEffect(() => {
+    if (userId && (appState === "login" || appState === "loading")) {
       setAppState("main");
     }
   }, [userId, appState]);
@@ -106,21 +112,28 @@ function AppInner() {
     });
   };
 
-  const handleSplashComplete = () => {
-    if (!loading) {
-      if (!userId) setAppState("login");
-      else setAppState("main");
-    } else {
-      setAppState("login");
-    }
-  };
-
   if (appState === "splash") {
     return (
       <>
         <SplashScreen onComplete={handleSplashComplete} />
         <Toaster position="top-center" />
       </>
+    );
+  }
+
+  // Brief loading screen after splash while Firestore resolves
+  if (appState === "loading") {
+    return (
+      <div
+        data-ocid="app.loading_state"
+        className="app-shell flex flex-col items-center justify-center min-h-dvh stadium-gradient"
+      >
+        <div className="text-5xl mb-4 animate-bounce">🏏</div>
+        <p className="text-muted-foreground text-sm tracking-widest uppercase">
+          Loading...
+        </p>
+        <Toaster position="top-center" />
+      </div>
     );
   }
 
