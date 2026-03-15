@@ -1,7 +1,8 @@
 import { db } from "@/lib/firebase";
 import {
+  createFallbackUser,
   createOrGetUserByDeviceId,
-  getOrCreateDeviceId,
+  getOrCreateUserId,
   getUserRef,
   logTransaction,
   updateCoins,
@@ -21,6 +22,16 @@ import { toast } from "sonner";
 
 // Suppress unused import warning
 void db;
+
+const INIT_TIMEOUT_MS = 3000;
+
+/** Race a promise against a timeout. Returns null if timed out. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
 
 interface UserContextValue {
   userId: string | null;
@@ -50,35 +61,39 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
   const refreshUserData = useCallback(() => setRefreshKey((k) => k + 1), []);
   const initDone = useRef(false);
 
-  // On mount: always auto-initialize the user (create if not exists).
+  // On mount: check localStorage for saved userId, load or create user.
+  // Falls back to a local user if Firestore takes more than 3 seconds.
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional mount-only effect
   useEffect(() => {
     if (initDone.current) return;
     initDone.current = true;
 
-    const deviceId = getOrCreateDeviceId();
+    const uid = getOrCreateUserId();
 
-    // Safety timeout — never block the app more than 8 seconds
-    const timeout = setTimeout(() => {
-      setLoading(false);
-    }, 8000);
-
-    createOrGetUserByDeviceId(deviceId)
+    withTimeout(createOrGetUserByDeviceId(uid), INIT_TIMEOUT_MS)
       .then((data) => {
-        setUserId(deviceId);
-        setUserData(data);
-        setCoins(data.coins);
+        const user = data ?? createFallbackUser(uid);
+        setUserId(uid);
+        setUserData(user);
+        setCoins(user.coins);
+
+        // If we timed out, still try to persist the user in background
+        if (!data) {
+          createOrGetUserByDeviceId(uid).catch(() => {
+            /* best-effort */
+          });
+        }
       })
-      .catch((e) => {
-        console.error("Error initializing user", e);
-        // Still unblock the app — show login screen as fallback
+      .catch(() => {
+        // Hard error — use fallback so the app always unblocks
+        const user = createFallbackUser(uid);
+        setUserId(uid);
+        setUserData(user);
+        setCoins(user.coins);
       })
       .finally(() => {
-        clearTimeout(timeout);
         setLoading(false);
       });
-
-    return () => clearTimeout(timeout);
   }, []);
 
   // Real-time Firestore subscription
@@ -98,13 +113,24 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
     return unsub;
   }, [userId, refreshKey]);
 
-  // startPlaying is kept for manual re-trigger (e.g. after logout)
+  // startPlaying: called manually (e.g. after logout or from login screen).
+  // Also respects the 3-second fallback so "Starting..." never hangs.
   const startPlaying = useCallback(async () => {
-    const deviceId = getOrCreateDeviceId();
-    const data = await createOrGetUserByDeviceId(deviceId);
-    setUserId(deviceId);
-    setUserData(data);
-    setCoins(data.coins);
+    const uid = getOrCreateUserId();
+    const data = await withTimeout(
+      createOrGetUserByDeviceId(uid),
+      INIT_TIMEOUT_MS,
+    );
+    const user = data ?? createFallbackUser(uid);
+    setUserId(uid);
+    setUserData(user);
+    setCoins(user.coins);
+    if (!data) {
+      // Background save
+      createOrGetUserByDeviceId(uid).catch(() => {
+        /* best-effort */
+      });
+    }
   }, []);
 
   const addCoins = useCallback(
@@ -131,7 +157,7 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(() => {
-    localStorage.removeItem("fansbattle_device_id");
+    localStorage.removeItem("fansbattle_user_id");
     setUserId(null);
     setUserData(null);
     setCoins(0);
