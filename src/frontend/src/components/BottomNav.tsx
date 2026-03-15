@@ -5,10 +5,11 @@ interface NavItem {
   label: string;
   icon: string;
   ocid: string;
+  adminOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: "live", label: "Live Match", icon: "🏏", ocid: "nav.live_match.tab" },
+  { id: "live", label: "Live Match", icon: "🏑", ocid: "nav.live_match.tab" },
   { id: "vote", label: "Vote Battle", icon: "🏆", ocid: "nav.vote_battle.tab" },
   {
     id: "sticker",
@@ -17,15 +18,29 @@ const NAV_ITEMS: NavItem[] = [
     ocid: "nav.sticker_creator.tab",
   },
   { id: "friends", label: "Friends", icon: "👥", ocid: "nav.friends_room.tab" },
-  { id: "shop", label: "Shop", icon: "🛍️", ocid: "nav.shop.tab" },
+  { id: "shop", label: "Shop", icon: "🛙️", ocid: "nav.shop.tab" },
+  {
+    id: "admin",
+    label: "Admin",
+    icon: "🛡️",
+    ocid: "nav.admin.tab",
+    adminOnly: true,
+  },
 ];
 
 interface Props {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
+  showAdmin?: boolean;
 }
 
-export default function BottomNav({ activeTab, onTabChange }: Props) {
+export default function BottomNav({
+  activeTab,
+  onTabChange,
+  showAdmin = false,
+}: Props) {
+  const visibleItems = NAV_ITEMS.filter((item) => !item.adminOnly || showAdmin);
+
   return (
     <nav
       className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-40 px-2 py-2"
@@ -36,7 +51,7 @@ export default function BottomNav({ activeTab, onTabChange }: Props) {
       }}
     >
       <div className="flex items-center justify-around">
-        {NAV_ITEMS.map((item) => {
+        {visibleItems.map((item) => {
           const isActive = activeTab === item.id;
           return (
             <button
@@ -66,12 +81,6 @@ export default function BottomNav({ activeTab, onTabChange }: Props) {
               >
                 {item.label}
               </span>
-              {isActive && (
-                <div
-                  className="absolute bottom-1 w-1 h-1 rounded-full"
-                  style={{ background: "oklch(0.72 0.18 50)" }}
-                />
-              )}
             </button>
           );
         })}

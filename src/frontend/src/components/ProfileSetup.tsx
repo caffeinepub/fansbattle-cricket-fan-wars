@@ -1,16 +1,18 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useUser } from "@/context/UserContext";
+import { updateUserProfile } from "@/lib/firestore";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 
 const AVATARS = [
-  "🏏",
+  "🏑",
   "🏆",
   "🔥",
   "⚡",
-  "🦁",
+  "🦱",
   "🐯",
-  "🦅",
+  "🦥",
   "🐉",
   "💪",
   "🎯",
@@ -59,7 +61,7 @@ const TEAMS = [
     name: "Rajasthan Legends",
     color: "#cc2d7a",
     bg: "oklch(0.52 0.2 340)",
-    emoji: "🩷",
+    emoji: "💗",
   },
   {
     name: "Hyderabad Sunrisers",
@@ -82,25 +84,38 @@ const TEAMS = [
 ];
 
 interface Props {
-  onComplete: (username: string, avatar: string, favoriteTeam: string) => void;
+  onComplete: () => void;
 }
 
 export default function ProfileSetup({ onComplete }: Props) {
+  const { userId, refreshUserData } = useUser();
   const [step, setStep] = useState(1);
   const [username, setUsername] = useState("");
   const [selectedAvatar, setSelectedAvatar] = useState("");
   const [selectedTeam, setSelectedTeam] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const canNext =
     (step === 1 && username.trim().length >= 3) ||
     (step === 2 && selectedAvatar !== "") ||
     (step === 3 && selectedTeam !== "");
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (step < 3) {
       setStep(step + 1);
     } else {
-      onComplete(username.trim(), selectedAvatar, selectedTeam);
+      if (!userId) return;
+      setSaving(true);
+      try {
+        await updateUserProfile(userId, {
+          favoriteTeam: selectedTeam,
+          avatar: selectedAvatar,
+        });
+        refreshUserData();
+        onComplete();
+      } finally {
+        setSaving(false);
+      }
     }
   };
 
@@ -117,7 +132,6 @@ export default function ProfileSetup({ onComplete }: Props) {
 
   return (
     <div className="app-shell flex flex-col items-center justify-center min-h-dvh stadium-gradient relative overflow-hidden">
-      {/* Background decoration */}
       <div
         className="absolute inset-0"
         style={{
@@ -139,9 +153,8 @@ export default function ProfileSetup({ onComplete }: Props) {
         transition={{ duration: 0.5 }}
         className="relative z-10 w-full max-w-sm px-6"
       >
-        {/* Header */}
         <div className="text-center mb-8">
-          <div className="text-4xl mb-3">🏟️</div>
+          <div className="text-4xl mb-3">🏙️</div>
           <h1
             className="font-display text-2xl font-800"
             style={{ color: "oklch(0.88 0.12 50)" }}
@@ -153,7 +166,6 @@ export default function ProfileSetup({ onComplete }: Props) {
           </p>
         </div>
 
-        {/* Progress bar */}
         <div className="flex gap-2 mb-8">
           {[1, 2, 3].map((s) => (
             <div
@@ -169,7 +181,6 @@ export default function ProfileSetup({ onComplete }: Props) {
           ))}
         </div>
 
-        {/* Step card */}
         <div className="card-glass rounded-2xl p-6">
           <AnimatePresence mode="wait">
             <motion.div
@@ -186,7 +197,6 @@ export default function ProfileSetup({ onComplete }: Props) {
                 {stepSubtitles[step - 1]}
               </p>
 
-              {/* Step 1: Username */}
               {step === 1 && (
                 <div className="space-y-3">
                   <Input
@@ -217,7 +227,6 @@ export default function ProfileSetup({ onComplete }: Props) {
                 </div>
               )}
 
-              {/* Step 2: Avatar */}
               {step === 2 && (
                 <div className="grid grid-cols-4 gap-3">
                   {AVATARS.map((emoji, i) => (
@@ -237,8 +246,6 @@ export default function ProfileSetup({ onComplete }: Props) {
                           selectedAvatar === emoji
                             ? "2px solid oklch(0.78 0.2 40)"
                             : "2px solid oklch(0.25 0.04 255)",
-                        transform:
-                          selectedAvatar === emoji ? "scale(1.1)" : "scale(1)",
                       }}
                     >
                       {emoji}
@@ -247,7 +254,6 @@ export default function ProfileSetup({ onComplete }: Props) {
                 </div>
               )}
 
-              {/* Step 3: Team */}
               {step === 3 && (
                 <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                   {TEAMS.map((team, i) => (
@@ -261,7 +267,7 @@ export default function ProfileSetup({ onComplete }: Props) {
                       style={{
                         background:
                           selectedTeam === team.name
-                            ? `${team.bg} / 0.3`
+                            ? "oklch(0.22 0.05 255)"
                             : "oklch(0.2 0.03 255)",
                         border:
                           selectedTeam === team.name
@@ -287,35 +293,29 @@ export default function ProfileSetup({ onComplete }: Props) {
           </AnimatePresence>
 
           <div className="mt-6">
-            {step < 3 ? (
-              <Button
-                data-ocid="profile_setup.next_button"
-                onClick={handleNext}
-                disabled={!canNext}
-                className="w-full h-12 font-display font-700 text-accent-foreground glow-orange"
-                style={{
-                  background: canNext
+            <Button
+              data-ocid={
+                step < 3
+                  ? "profile_setup.next_button"
+                  : "profile_setup.submit_button"
+              }
+              onClick={handleNext}
+              disabled={!canNext || saving}
+              className="w-full h-12 font-display font-700 text-accent-foreground"
+              style={{
+                background: canNext
+                  ? step < 3
                     ? "linear-gradient(135deg, oklch(0.72 0.18 50), oklch(0.78 0.2 40))"
-                    : "oklch(0.25 0.04 255)",
-                }}
-              >
-                Next Step →
-              </Button>
-            ) : (
-              <Button
-                data-ocid="profile_setup.submit_button"
-                onClick={handleNext}
-                disabled={!canNext}
-                className="w-full h-12 font-display font-700 text-accent-foreground glow-orange"
-                style={{
-                  background: canNext
-                    ? "linear-gradient(135deg, oklch(0.65 0.18 140), oklch(0.7 0.2 150))"
-                    : "oklch(0.25 0.04 255)",
-                }}
-              >
-                🚀 Enter the Arena!
-              </Button>
-            )}
+                    : "linear-gradient(135deg, oklch(0.65 0.18 140), oklch(0.7 0.2 150))"
+                  : "oklch(0.25 0.04 255)",
+              }}
+            >
+              {saving
+                ? "Saving..."
+                : step < 3
+                  ? "Next Step →"
+                  : "🚀 Enter the Arena!"}
+            </Button>
           </div>
         </div>
 

@@ -1,217 +1,298 @@
-import { motion } from "motion/react";
-import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { useUser } from "@/context/UserContext";
+import { db } from "@/lib/firebase";
+import {
+  addDoc,
+  collection,
+  doc,
+  increment,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  updateDoc,
+} from "firebase/firestore";
+import { Share2 } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-interface Props {
-  addCoins: (n: number) => void;
-}
-
 interface Poll {
-  id: number;
+  id: string;
   question: string;
   optionA: string;
   optionB: string;
-  percentA: number;
-  emojiA: string;
-  emojiB: string;
+  votesA: number;
+  votesB: number;
+  enabled: boolean;
 }
 
-const POLLS: Poll[] = [
+const DEFAULT_POLLS = [
   {
-    id: 1,
-    question: "GOAT of Cricket?",
+    question: "Best Batsman Today?",
+    optionA: "Virat Kohli",
+    optionB: "Rohit Sharma",
+  },
+  {
+    question: "Best Captain Right Now?",
+    optionA: "Rohit Sharma",
+    optionB: "MS Dhoni",
+  },
+  {
+    question: "Who Will Win Tonight?",
+    optionA: "Team India",
+    optionB: "Opponent",
+  },
+  {
+    question: "Best T20 Finisher?",
+    optionA: "MS Dhoni",
+    optionB: "Hardik Pandya",
+  },
+  {
+    question: "Cricket GOAT?",
     optionA: "Sachin Tendulkar",
     optionB: "Virat Kohli",
-    percentA: 67,
-    emojiA: "🐐",
-    emojiB: "👑",
-  },
-  {
-    id: 2,
-    question: "Best T20 Team?",
-    optionA: "India",
-    optionB: "Australia",
-    percentA: 54,
-    emojiA: "🇮🇳",
-    emojiB: "🇦🇺",
-  },
-  {
-    id: 3,
-    question: "Best Captain Ever?",
-    optionA: "MS Dhoni",
-    optionB: "Ricky Ponting",
-    percentA: 71,
-    emojiA: "🧢",
-    emojiB: "⚡",
-  },
-  {
-    id: 4,
-    question: "Most Exciting Batsman?",
-    optionA: "Rohit Sharma",
-    optionB: "David Warner",
-    percentA: 48,
-    emojiA: "🚀",
-    emojiB: "🔥",
   },
 ];
 
-export default function VoteBattle({ addCoins }: Props) {
-  const [voted, setVoted] = useState<Record<number, "A" | "B">>({});
-  const [percents, setPercents] = useState<Record<number, number>>({});
+interface Props {
+  addCoins: (amount: number, type: string) => Promise<void>;
+}
 
-  const handleVote = (poll: Poll, choice: "A" | "B") => {
-    if (voted[poll.id]) return;
-    setVoted((prev) => ({ ...prev, [poll.id]: choice }));
-    const newPercent =
+export default function VoteBattle({ addCoins }: Props) {
+  const { userId } = useUser();
+  const [polls, setPolls] = useState<Poll[]>([]);
+  const [voted, setVoted] = useState<Record<string, "A" | "B">>({});
+  const seededRef = useRef(false);
+
+  // Load voted state from localStorage per user
+  useEffect(() => {
+    if (!userId) return;
+    const key = `fansbattle_votes_${userId}`;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      try {
+        setVoted(JSON.parse(saved));
+      } catch {
+        // ignore
+      }
+    }
+  }, [userId]);
+
+  // Subscribe to polls
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "polls"), orderBy("createdAt", "desc")),
+      (snap) => {
+        const data: Poll[] = snap.docs
+          .map((d) => ({
+            id: d.id,
+            question: d.data().question || "",
+            optionA: d.data().optionA || "",
+            optionB: d.data().optionB || "",
+            votesA: d.data().votesA || 0,
+            votesB: d.data().votesB || 0,
+            enabled: d.data().enabled !== false,
+          }))
+          .filter((p) => p.enabled);
+        setPolls(data);
+
+        if (data.length === 0 && !seededRef.current) {
+          seededRef.current = true;
+          Promise.all(
+            DEFAULT_POLLS.map((p) =>
+              addDoc(collection(db, "polls"), {
+                ...p,
+                votesA: Math.floor(50 + Math.random() * 200),
+                votesB: Math.floor(50 + Math.random() * 200),
+                enabled: true,
+                createdAt: serverTimestamp(),
+              }),
+            ),
+          );
+        }
+      },
+    );
+    return unsub;
+  }, []);
+
+  const handleVote = async (poll: Poll, choice: "A" | "B") => {
+    if (!userId) return;
+    if (voted[poll.id]) {
+      toast.error("Already voted on this poll!");
+      return;
+    }
+
+    setVoted((prev) => {
+      const next = { ...prev, [poll.id]: choice };
+      localStorage.setItem(`fansbattle_votes_${userId}`, JSON.stringify(next));
+      return next;
+    });
+
+    try {
+      await updateDoc(doc(db, "polls", poll.id), {
+        [choice === "A" ? "votesA" : "votesB"]: increment(1),
+      });
+      await addCoins(3, "vote_reward");
+      toast.success("+3 coins earned! 🪙", { duration: 2000 });
+    } catch {
+      toast.error("Vote failed, try again.");
+    }
+  };
+
+  const handleShare = (poll: Poll) => {
+    const choice = voted[poll.id];
+    const option = choice === "A" ? poll.optionA : poll.optionB;
+    const total = poll.votesA + poll.votesB || 1;
+    const pct =
       choice === "A"
-        ? Math.min(poll.percentA + 2, 95)
-        : Math.max(poll.percentA - 2, 5);
-    setPercents((prev) => ({ ...prev, [poll.id]: newPercent }));
-    addCoins(3);
-    toast.success("🪙 +3 coins! Vote registered!", { duration: 2000 });
+        ? Math.round((poll.votesA / total) * 100)
+        : Math.round((poll.votesB / total) * 100);
+    const text = `🏑 FansBattle Poll: "${poll.question}" - I voted ${option}! ${pct}% fans agree. Play now!`;
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank");
   };
 
   return (
-    <div className="px-4 py-4 space-y-4">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-2xl">⚔️</span>
+    <div className="px-4 py-6 space-y-4">
+      <div className="flex items-center justify-between mb-2">
         <div>
           <h2 className="font-display text-xl font-800 text-foreground">
-            Vote Battle
+            🏆 Vote Battle
           </h2>
-          <p className="text-xs text-muted-foreground">
-            Cast your vote. Earn coins.
+          <p className="text-muted-foreground text-xs mt-0.5">
+            Vote &amp; earn 3 coins per poll
           </p>
         </div>
+        <Badge
+          className="text-xs px-2 py-0.5"
+          style={{
+            background: "oklch(0.55 0.2 145 / 0.2)",
+            color: "oklch(0.7 0.18 145)",
+          }}
+        >
+          LIVE
+        </Badge>
       </div>
 
-      {POLLS.map((poll, idx) => {
-        const pA = percents[poll.id] ?? poll.percentA;
-        const pB = 100 - pA;
-        const myVote = voted[poll.id];
+      <AnimatePresence>
+        {polls.map((poll, idx) => {
+          const total = poll.votesA + poll.votesB || 1;
+          const pctA = Math.round((poll.votesA / total) * 100);
+          const pctB = 100 - pctA;
+          const hasVoted = !!voted[poll.id];
 
-        return (
-          <motion.div
-            key={poll.id}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: idx * 0.08 }}
-            className="card-glass rounded-2xl p-4"
-          >
-            <h3 className="font-display text-base font-700 text-foreground mb-3 text-center">
-              {poll.question}
-            </h3>
-
-            {/* Options Row */}
-            <div className="flex gap-2 mb-3">
-              <button
-                type="button"
-                onClick={() => handleVote(poll, "A")}
-                disabled={!!myVote}
-                className="flex-1 py-3 rounded-xl text-center transition-all duration-200 font-600 text-sm"
-                style={{
-                  background:
-                    myVote === "A"
-                      ? "linear-gradient(135deg, oklch(0.65 0.18 220), oklch(0.7 0.2 230))"
-                      : "oklch(0.22 0.04 255)",
-                  border: `1px solid ${myVote === "A" ? "oklch(0.65 0.18 220)" : "oklch(0.3 0.04 255)"}`,
-                  color: myVote === "A" ? "white" : "oklch(0.8 0.04 255)",
-                  boxShadow:
-                    myVote === "A"
-                      ? "0 0 12px oklch(0.65 0.18 220 / 0.5)"
-                      : "none",
-                }}
-              >
-                <span className="block text-lg">{poll.emojiA}</span>
-                <span className="text-xs leading-tight">{poll.optionA}</span>
-              </button>
-
-              <div className="flex items-center justify-center w-8">
-                <span className="text-xs font-800 text-muted-foreground">
-                  VS
+          return (
+            <motion.div
+              key={poll.id}
+              data-ocid={`vote_battle.poll.item.${idx + 1}`}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: idx * 0.08 }}
+              className="card-glass rounded-2xl p-4 space-y-3"
+            >
+              <div className="flex items-center justify-between">
+                <p className="font-display font-700 text-foreground text-sm">
+                  {poll.question}
+                </p>
+                <span
+                  className="text-[10px] px-2 py-0.5 rounded-full font-600"
+                  style={{
+                    background: "oklch(0.55 0.2 145 / 0.15)",
+                    color: "oklch(0.7 0.18 145)",
+                  }}
+                >
+                  LIVE
                 </span>
               </div>
 
-              <button
-                type="button"
-                onClick={() => handleVote(poll, "B")}
-                disabled={!!myVote}
-                className="flex-1 py-3 rounded-xl text-center transition-all duration-200 font-600 text-sm"
-                style={{
-                  background:
-                    myVote === "B"
-                      ? "linear-gradient(135deg, oklch(0.72 0.18 50), oklch(0.78 0.2 40))"
-                      : "oklch(0.22 0.04 255)",
-                  border: `1px solid ${myVote === "B" ? "oklch(0.72 0.18 50)" : "oklch(0.3 0.04 255)"}`,
-                  color:
-                    myVote === "B"
-                      ? "oklch(0.12 0.02 240)"
-                      : "oklch(0.8 0.04 255)",
-                  boxShadow:
-                    myVote === "B"
-                      ? "0 0 12px oklch(0.72 0.18 50 / 0.5)"
-                      : "none",
-                }}
-              >
-                <span className="block text-lg">{poll.emojiB}</span>
-                <span className="text-xs leading-tight">{poll.optionB}</span>
-              </button>
-            </div>
+              <div className="grid grid-cols-2 gap-2">
+                {(["A", "B"] as const).map((side) => {
+                  const label = side === "A" ? poll.optionA : poll.optionB;
+                  const pct = side === "A" ? pctA : pctB;
+                  const isVoted = voted[poll.id] === side;
+                  return (
+                    <motion.button
+                      key={side}
+                      type="button"
+                      data-ocid={`vote_battle.poll.option_${side.toLowerCase()}.${idx + 1}`}
+                      whileTap={{ scale: 0.97 }}
+                      onClick={() => handleVote(poll, side)}
+                      disabled={hasVoted}
+                      className="relative overflow-hidden rounded-xl px-3 py-2.5 text-left transition-all"
+                      style={{
+                        background: isVoted
+                          ? "oklch(0.65 0.22 30 / 0.2)"
+                          : "oklch(0.2 0.03 255)",
+                        border: isVoted
+                          ? "1.5px solid oklch(0.72 0.18 50)"
+                          : "1.5px solid oklch(0.25 0.04 255)",
+                      }}
+                    >
+                      <p className="font-600 text-foreground text-xs mb-1">
+                        {label}
+                      </p>
+                      <p
+                        className="font-display font-800 text-lg"
+                        style={{ color: "oklch(0.72 0.18 50)" }}
+                      >
+                        {hasVoted ? `${pct}%` : "Vote"}
+                      </p>
+                      {hasVoted && (
+                        <div
+                          className="absolute bottom-0 left-0 h-1"
+                          style={{
+                            width: `${pct}%`,
+                            background: "oklch(0.72 0.18 50)",
+                            borderRadius: "0 0 4px 4px",
+                          }}
+                        />
+                      )}
+                    </motion.button>
+                  );
+                })}
+              </div>
 
-            {/* Progress Bar */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span style={{ color: "oklch(0.75 0.15 220)" }}>{pA}%</span>
-                <span style={{ color: "oklch(0.78 0.16 50)" }}>{pB}%</span>
-              </div>
-              <div
-                className="h-2.5 rounded-full overflow-hidden flex"
-                style={{ background: "oklch(0.22 0.04 255)" }}
-              >
-                <motion.div
-                  className="h-full progress-fill-blue"
-                  initial={{ width: `${poll.percentA}%` }}
-                  animate={{ width: `${pA}%` }}
-                  transition={{ duration: 0.5, ease: "easeOut" }}
-                />
-                <motion.div
-                  className="h-full progress-fill-orange"
-                  initial={{ width: `${100 - poll.percentA}%` }}
-                  animate={{ width: `${pB}%` }}
-                  transition={{ duration: 0.5, ease: "easeOut" }}
-                />
-              </div>
-            </div>
+              {hasVoted && (
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground">
+                    {total.toLocaleString()} votes
+                  </p>
+                  <button
+                    type="button"
+                    data-ocid={`vote_battle.share.${idx + 1}`}
+                    onClick={() => handleShare(poll)}
+                    className="flex items-center gap-1 text-xs px-3 py-1 rounded-full"
+                    style={{
+                      background: "oklch(0.35 0.1 140 / 0.3)",
+                      color: "oklch(0.7 0.16 140)",
+                    }}
+                  >
+                    <Share2 className="h-3 w-3" />
+                    Share on WhatsApp
+                  </button>
+                </div>
+              )}
 
-            {/* Vote Button */}
-            {!myVote ? (
-              <button
-                type="button"
-                data-ocid={`vote_battle.poll.button.${idx + 1}`}
-                onClick={() => handleVote(poll, "A")}
-                className="mt-3 w-full py-2 rounded-xl text-sm font-700 font-display text-muted-foreground transition-colors hover:text-foreground"
-                style={{
-                  background: "oklch(0.22 0.04 255)",
-                  border: "1px solid oklch(0.3 0.04 255)",
-                }}
-              >
-                Vote & Earn 3 🪙
-              </button>
-            ) : (
-              <div
-                className="mt-3 w-full py-2 rounded-xl text-sm font-700 font-display text-center"
-                style={{
-                  background: "oklch(0.62 0.2 140 / 0.15)",
-                  color: "oklch(0.72 0.15 140)",
-                  border: "1px solid oklch(0.62 0.2 140 / 0.3)",
-                }}
-              >
-                ✅ Voted for {myVote === "A" ? poll.optionA : poll.optionB}
-              </div>
-            )}
-          </motion.div>
-        );
-      })}
+              {!hasVoted && (
+                <p
+                  className="text-xs text-center"
+                  style={{ color: "oklch(0.72 0.18 50)" }}
+                >
+                  Vote &amp; Earn 3 🪙
+                </p>
+              )}
+            </motion.div>
+          );
+        })}
+      </AnimatePresence>
+
+      {polls.length === 0 && (
+        <div className="text-center py-16" data-ocid="vote_battle.empty_state">
+          <div className="text-4xl mb-3">📊</div>
+          <p className="text-muted-foreground">Loading polls...</p>
+        </div>
+      )}
     </div>
   );
 }

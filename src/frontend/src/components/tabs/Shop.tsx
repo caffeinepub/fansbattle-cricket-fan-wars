@@ -4,24 +4,27 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 interface Props {
-  addCoins: (n: number) => void;
-  spendCoins: (n: number) => boolean;
+  onWatchAd?: () => void;
+  addCoins: (n: number, type: string) => Promise<void>;
+  spendCoins: (n: number, type: string) => Promise<boolean>;
 }
 
 const PACKAGES = [
   {
     id: 1,
     name: "Starter",
-    coins: 200,
-    price: "₹19",
+    coins: 100,
+    price: 10,
+    priceStr: "₹10",
     emoji: "🪙",
     highlight: false,
   },
   {
     id: 2,
     name: "Fan Pack",
-    coins: 700,
-    price: "₹49",
+    coins: 600,
+    price: 50,
+    priceStr: "₹50",
     emoji: "⚡",
     highlight: true,
   },
@@ -29,7 +32,8 @@ const PACKAGES = [
     id: 3,
     name: "Pro Pack",
     coins: 1500,
-    price: "₹99",
+    price: 100,
+    priceStr: "₹100",
     emoji: "🚀",
     highlight: false,
   },
@@ -53,13 +57,24 @@ function generateInviteCode() {
   ).join("");
 }
 
-export default function Shop({ addCoins, spendCoins }: Props) {
+export default function Shop({ addCoins, spendCoins, onWatchAd }: Props) {
   const [claimed, setClaimed] = useState(false);
   const [countdown, setCountdown] = useState(83645);
   const [isSpinning, setIsSpinning] = useState(false);
   const [lastResult, setLastResult] = useState<number | null>(null);
   const [inviteCode] = useState(() => generateInviteCode());
   const spinRef = useRef<HTMLDivElement>(null);
+
+  // Load Razorpay script
+  useEffect(() => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    document.body.appendChild(script);
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
 
   useEffect(() => {
     if (!claimed) return;
@@ -69,40 +84,75 @@ export default function Shop({ addCoins, spendCoins }: Props) {
     return () => clearInterval(timer);
   }, [claimed]);
 
-  const handleClaim = () => {
+  const handleClaim = async () => {
     if (claimed) return;
     setClaimed(true);
-    addCoins(50);
+    await addCoins(50, "daily_claim");
     toast.success("🪙 +50 coins claimed! Come back tomorrow.", {
       duration: 3000,
     });
   };
 
   const handleBuy = (pkg: (typeof PACKAGES)[0]) => {
-    addCoins(pkg.coins);
-    toast.success(
-      `🎉 +${pkg.coins.toLocaleString()} coins added! Purchase simulated!`,
-      { duration: 3000 },
-    );
+    const options = {
+      key: "rzp_test_placeholder",
+      amount: pkg.price * 100,
+      currency: "INR",
+      name: "FansBattle",
+      description: `${pkg.coins} Coins Pack`,
+      handler: async () => {
+        await addCoins(pkg.coins, "coin_purchase");
+        toast.success(`🎉 +${pkg.coins.toLocaleString()} coins added!`, {
+          duration: 3000,
+        });
+      },
+      theme: { color: "#f97316" },
+      modal: {
+        ondismiss: () => {
+          toast.info("Payment cancelled.");
+        },
+      },
+    };
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rzp = new (
+        window as unknown as {
+          Razorpay: new (opts: unknown) => { open: () => void };
+        }
+      ).Razorpay(options);
+      rzp.open();
+    } catch {
+      // Razorpay not loaded yet (test mode fallback)
+      addCoins(pkg.coins, "coin_purchase");
+      toast.success(
+        `🎉 +${pkg.coins.toLocaleString()} coins added! (test mode)`,
+        { duration: 3000 },
+      );
+    }
   };
 
   const handleWatchAd = () => {
-    addCoins(25);
-    toast.success("📺 Ad watched! +25 coins earned.", { duration: 2500 });
+    if (onWatchAd) {
+      onWatchAd();
+      return;
+    }
+    addCoins(20, "ad_reward");
+    toast.success("📺 Ad watched! +20 coins earned.", { duration: 2500 });
   };
 
-  const handleSpin = () => {
+  const handleSpin = async () => {
     if (isSpinning) return;
-    if (!spendCoins(SPIN_COST)) return;
+    const ok = await spendCoins(SPIN_COST, "spin_wheel");
+    if (!ok) return;
     setIsSpinning(true);
     setLastResult(null);
-    setTimeout(() => {
+    setTimeout(async () => {
       const result =
         SPIN_RESULTS[Math.floor(Math.random() * SPIN_RESULTS.length)];
       setLastResult(result);
       setIsSpinning(false);
-      addCoins(result);
-      toast.success(`+${result} coins! Lucky spin! 🎰`, { duration: 3000 });
+      await addCoins(result, "spin_win");
+      toast.success(`+${result} coins! Lucky spin! 🎟️`, { duration: 3000 });
     }, 1500);
   };
 
@@ -113,15 +163,15 @@ export default function Shop({ addCoins, spendCoins }: Props) {
     toast.success("📋 Invite link copied!", { duration: 2000 });
   };
 
-  const handleClaimInviteReward = () => {
-    addCoins(50);
+  const handleClaimInviteReward = async () => {
+    await addCoins(50, "invite_reward");
     toast.success("👥 Friend invited! +50 coins!", { duration: 2500 });
   };
 
   return (
     <div className="px-4 py-4 space-y-4">
       <div className="flex items-center gap-2 mb-2">
-        <span className="text-2xl">🛍️</span>
+        <span className="text-2xl">🛙️</span>
         <div>
           <h2 className="font-display text-xl font-800 text-foreground">
             Shop
@@ -205,7 +255,7 @@ export default function Shop({ addCoins, spendCoins }: Props) {
             border: "1px solid oklch(0.88 0.18 90 / 0.4)",
           }}
         >
-          +25 🪙
+          +20 🪙
         </span>
       </motion.button>
 
@@ -231,7 +281,6 @@ export default function Shop({ addCoins, spendCoins }: Props) {
             </p>
           </div>
         </div>
-
         <div className="flex flex-col items-center gap-3">
           <div
             ref={spinRef}
@@ -244,12 +293,10 @@ export default function Shop({ addCoins, spendCoins }: Props) {
               filter: isSpinning
                 ? "drop-shadow(0 0 12px oklch(0.7 0.2 290))"
                 : "none",
-              transition: "filter 0.3s",
             }}
           >
             🎡
           </div>
-
           {lastResult !== null && !isSpinning && (
             <motion.div
               initial={{ opacity: 0, scale: 0.5 }}
@@ -267,7 +314,6 @@ export default function Shop({ addCoins, spendCoins }: Props) {
               </p>
             </motion.div>
           )}
-
           <Button
             data-ocid="shop.spin_wheel.button"
             onClick={handleSpin}
@@ -278,7 +324,6 @@ export default function Shop({ addCoins, spendCoins }: Props) {
                 ? "oklch(0.35 0.08 290)"
                 : "linear-gradient(135deg, oklch(0.6 0.2 290), oklch(0.65 0.22 300))",
               color: "white",
-              opacity: isSpinning ? 0.7 : 1,
             }}
           >
             {isSpinning ? "Spinning..." : `Spin Wheel — ${SPIN_COST} 🪙`}
@@ -308,7 +353,6 @@ export default function Shop({ addCoins, spendCoins }: Props) {
             </p>
           </div>
         </div>
-
         <div
           className="flex items-center justify-between px-3 py-2 rounded-xl"
           style={{
@@ -324,7 +368,6 @@ export default function Shop({ addCoins, spendCoins }: Props) {
           </span>
           <span className="text-xs text-muted-foreground">Your Code</span>
         </div>
-
         <Button
           data-ocid="shop.invite.button"
           onClick={handleCopyInvite}
@@ -337,7 +380,6 @@ export default function Shop({ addCoins, spendCoins }: Props) {
         >
           📤 Copy Invite Link
         </Button>
-
         <Button
           data-ocid="shop.invite_reward.button"
           onClick={handleClaimInviteReward}
@@ -368,11 +410,7 @@ export default function Shop({ addCoins, spendCoins }: Props) {
               background: pkg.highlight
                 ? "linear-gradient(135deg, oklch(0.25 0.08 255), oklch(0.2 0.05 255))"
                 : "oklch(0.17 0.03 255)",
-              border: `1px solid ${
-                pkg.highlight
-                  ? "oklch(0.65 0.18 220 / 0.6)"
-                  : "oklch(0.25 0.04 255)"
-              }`,
+              border: `1px solid ${pkg.highlight ? "oklch(0.65 0.18 220 / 0.6)" : "oklch(0.25 0.04 255)"}`,
               boxShadow: pkg.highlight
                 ? "0 0 20px oklch(0.65 0.18 220 / 0.2)"
                 : "none",
@@ -384,7 +422,7 @@ export default function Shop({ addCoins, spendCoins }: Props) {
                   className="text-[9px] font-700 px-1.5 py-0.5 rounded-full"
                   style={{ background: "oklch(0.65 0.18 220)", color: "white" }}
                 >
-                  BEST VALUE
+                  BEST
                 </span>
               </div>
             )}
@@ -412,13 +450,12 @@ export default function Shop({ addCoins, spendCoins }: Props) {
                   : "1px solid oklch(0.3 0.04 255)",
               }}
             >
-              {pkg.price}
+              {pkg.priceStr}
             </Button>
           </motion.div>
         ))}
       </div>
 
-      {/* Footer */}
       <div className="pt-4 pb-2 text-center">
         <p className="text-xs text-muted-foreground">
           © {new Date().getFullYear()}. Built with ❤️ using{" "}

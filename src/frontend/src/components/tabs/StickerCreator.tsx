@@ -4,7 +4,46 @@ import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 import { toast } from "sonner";
 
-interface AvatarItem {
+const TEAM_COLORS = [
+  {
+    id: "mi",
+    name: "MI",
+    fullName: "Mumbai Indians",
+    style: "linear-gradient(135deg, oklch(0.22 0.12 255), oklch(0.42 0.2 220))",
+  },
+  {
+    id: "csk",
+    name: "CSK",
+    fullName: "Chennai Super Kings",
+    style: "linear-gradient(135deg, oklch(0.35 0.15 80), oklch(0.62 0.22 70))",
+  },
+  {
+    id: "rcb",
+    name: "RCB",
+    fullName: "Royal Challengers",
+    style: "linear-gradient(135deg, oklch(0.25 0.1 15), oklch(0.45 0.2 20))",
+  },
+  {
+    id: "kkr",
+    name: "KKR",
+    fullName: "Knight Riders",
+    style: "linear-gradient(135deg, oklch(0.22 0.1 290), oklch(0.42 0.18 300))",
+  },
+  {
+    id: "srh",
+    name: "SRH",
+    fullName: "Sunrisers",
+    style: "linear-gradient(135deg, oklch(0.3 0.1 50), oklch(0.55 0.22 40))",
+  },
+  {
+    id: "dc",
+    name: "DC",
+    fullName: "Delhi Capitals",
+    style: "linear-gradient(135deg, oklch(0.22 0.12 240), oklch(0.4 0.18 250))",
+  },
+];
+
+interface Character {
   id: string;
   emoji: string;
   label: string;
@@ -12,80 +51,43 @@ interface AvatarItem {
   cost?: number;
 }
 
-const AVATARS: AvatarItem[] = [
-  { id: "bat", emoji: "🏏", label: "Batsman" },
-  { id: "ball", emoji: "⚡", label: "Bowler" },
-  { id: "keeper", emoji: "🧤", label: "Keeper" },
-  { id: "field", emoji: "🤸", label: "Fielder" },
-  { id: "ump", emoji: "👆", label: "Umpire" },
-  { id: "fan", emoji: "🎉", label: "Fan" },
-  { id: "legend", emoji: "🦁", label: "Legend", premium: true, cost: 25 },
-  { id: "goat", emoji: "🐐", label: "GOAT", premium: true, cost: 25 },
-  { id: "warrior", emoji: "⚔️", label: "Warrior", premium: true, cost: 25 },
-];
-
-const BADGES = [
-  { id: "fire", emoji: "🔥" },
-  { id: "crown", emoji: "👑" },
-  { id: "lightning", emoji: "⚡" },
-  { id: "star", emoji: "⭐" },
-  { id: "shield", emoji: "🛡️" },
-];
-
-const BACKGROUNDS = [
-  {
-    id: "blue",
-    style:
-      "linear-gradient(135deg, oklch(0.25 0.12 255), oklch(0.45 0.18 220))",
-  },
-  {
-    id: "orange",
-    style: "linear-gradient(135deg, oklch(0.3 0.1 50), oklch(0.55 0.2 40))",
-  },
-  {
-    id: "green",
-    style: "linear-gradient(135deg, oklch(0.25 0.1 140), oklch(0.45 0.18 160))",
-  },
-  {
-    id: "purple",
-    style: "linear-gradient(135deg, oklch(0.25 0.1 290), oklch(0.45 0.18 300))",
-  },
-  {
-    id: "gold",
-    style: "linear-gradient(135deg, oklch(0.35 0.12 80), oklch(0.6 0.2 70))",
-  },
-  {
-    id: "red",
-    style: "linear-gradient(135deg, oklch(0.25 0.1 15), oklch(0.45 0.2 20))",
-  },
+const CHARACTERS: Character[] = [
+  { id: "batsman", emoji: "🏑", label: "Batsman Hero" },
+  { id: "bowler", emoji: "⚡", label: "Bowler Beast" },
+  { id: "keeper", emoji: "🧤", label: "Wicket Keeper" },
+  { id: "fielder", emoji: "🤸", label: "Fielder Ace" },
+  { id: "spin", emoji: "🌀", label: "Spin Wizard" },
+  { id: "fast", emoji: "💨", label: "Fast Fury" },
+  { id: "legend", emoji: "🦱", label: "Legend Lion", premium: true, cost: 25 },
+  { id: "goat", emoji: "🐐", label: "GOAT Master", premium: true, cost: 25 },
+  { id: "warrior", emoji: "⚔️", label: "Warrior King", premium: true, cost: 25 },
 ];
 
 interface Props {
-  addCoins: (n: number) => void;
-  spendCoins: (n: number) => boolean;
+  addCoins: (n: number, type: string) => Promise<void>;
+  spendCoins: (n: number, type: string) => Promise<boolean>;
 }
 
 export default function StickerCreator({ spendCoins }: Props) {
-  const [avatar, setAvatar] = useState("bat");
-  const [chant, setChant] = useState("");
-  const [badge, setBadge] = useState("fire");
-  const [bg, setBg] = useState("blue");
+  const [teamColor, setTeamColor] = useState("mi");
+  const [character, setCharacter] = useState("batsman");
+  const [caption, setCaption] = useState("");
   const [created, setCreated] = useState(false);
   const [unlockedPremium, setUnlockedPremium] = useState<string[]>([]);
 
-  const selectedAvatar = AVATARS.find((a) => a.id === avatar)!;
-  const selectedBadge = BADGES.find((b) => b.id === badge)!;
-  const selectedBg = BACKGROUNDS.find((b) => b.id === bg)!;
+  const selectedTeam = TEAM_COLORS.find((t) => t.id === teamColor)!;
+  const selectedChar = CHARACTERS.find((c) => c.id === character)!;
 
-  const handleAvatarClick = (a: AvatarItem) => {
-    if (a.premium && !unlockedPremium.includes(a.id)) {
-      if (spendCoins(a.cost ?? 25)) {
-        setUnlockedPremium((prev) => [...prev, a.id]);
-        setAvatar(a.id);
-        toast.success("🔓 Premium avatar unlocked!", { duration: 2500 });
+  const handleCharacterClick = async (c: Character) => {
+    if (c.premium && !unlockedPremium.includes(c.id)) {
+      const ok = await spendCoins(c.cost ?? 25, "premium_sticker");
+      if (ok) {
+        setUnlockedPremium((prev) => [...prev, c.id]);
+        setCharacter(c.id);
+        toast.success("🔓 Premium character unlocked!", { duration: 2500 });
       }
     } else {
-      setAvatar(a.id);
+      setCharacter(c.id);
     }
   };
 
@@ -94,8 +96,23 @@ export default function StickerCreator({ spendCoins }: Props) {
     toast.success("🎨 Sticker created!", { duration: 2000 });
   };
 
-  const handleShare = () => {
-    toast.success("📤 Sticker saved to your collection!", { duration: 2500 });
+  const handleShare = async () => {
+    const shareData = {
+      title: "My Cricket Sticker – FansBattle",
+      text: caption
+        ? `${caption} — Created with FansBattle! 🏑🔥`
+        : "Check out my cricket sticker on FansBattle! 🏑🔥",
+    };
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData);
+      } else {
+        await navigator.clipboard.writeText(shareData.text);
+        toast.success("Link copied!", { duration: 2500 });
+      }
+    } catch {
+      toast.success("Link copied!", { duration: 2500 });
+    }
   };
 
   return (
@@ -103,7 +120,7 @@ export default function StickerCreator({ spendCoins }: Props) {
       <div className="flex items-center gap-2 mb-2">
         <span className="text-2xl">✨</span>
         <div>
-          <h2 className="font-display text-xl font-800 text-foreground">
+          <h2 className="font-display text-xl font-bold text-foreground">
             Sticker Creator
           </h2>
           <p className="text-xs text-muted-foreground">
@@ -112,37 +129,38 @@ export default function StickerCreator({ spendCoins }: Props) {
         </div>
       </div>
 
-      {/* Preview */}
       <AnimatePresence mode="wait">
-        {created ? (
-          <motion.div
-            key="created"
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="card-glass rounded-2xl p-4 text-center"
+        <motion.div
+          key={created ? "created" : "preview"}
+          initial={{ opacity: 0, scale: 0.85 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.85 }}
+          transition={{ type: "spring", stiffness: 280, damping: 22 }}
+          className="card-glass rounded-2xl p-4 text-center"
+        >
+          <p className="text-xs text-muted-foreground mb-3 uppercase tracking-wider font-semibold">
+            {created ? "Your Sticker" : "Live Preview"}
+          </p>
+          <div
+            className="sticker-canvas mx-auto"
+            style={{ background: selectedTeam.style }}
           >
-            <p className="text-xs text-muted-foreground mb-3 uppercase tracking-wider font-600">
-              Your Sticker
-            </p>
-            <div
-              className="sticker-canvas mx-auto max-w-[200px] flex-col gap-2"
-              style={{ background: selectedBg.style }}
-            >
-              <div className="text-6xl">{selectedAvatar.emoji}</div>
-              <div className="text-2xl">{selectedBadge.emoji}</div>
-              {chant && (
-                <div className="absolute bottom-4 left-2 right-2 text-center">
-                  <span
-                    className="text-xs font-700 text-white text-shadow"
-                    style={{ textShadow: "0 1px 4px rgba(0,0,0,0.8)" }}
-                  >
-                    {chant}
-                  </span>
-                </div>
-              )}
-            </div>
+            <span className="text-6xl leading-none select-none">
+              {selectedChar.emoji}
+            </span>
+            {caption && (
+              <span
+                className="absolute bottom-3 left-2 right-2 text-center text-xs font-bold text-white leading-tight"
+                style={{ textShadow: "0 1px 6px rgba(0,0,0,0.9)" }}
+              >
+                {caption}
+              </span>
+            )}
+          </div>
+          {created && (
             <div className="flex gap-2 mt-4">
               <Button
+                data-ocid="sticker.edit.button"
                 variant="outline"
                 onClick={() => setCreated(false)}
                 className="flex-1 border-border text-muted-foreground"
@@ -152,7 +170,7 @@ export default function StickerCreator({ spendCoins }: Props) {
               <Button
                 data-ocid="sticker.share.button"
                 onClick={handleShare}
-                className="flex-1 font-700 text-accent-foreground"
+                className="flex-1 font-bold glow-orange"
                 style={{
                   background:
                     "linear-gradient(135deg, oklch(0.72 0.18 50), oklch(0.78 0.2 40))",
@@ -161,175 +179,161 @@ export default function StickerCreator({ spendCoins }: Props) {
                 📤 Share
               </Button>
             </div>
-          </motion.div>
-        ) : (
-          <motion.div key="preview" className="card-glass rounded-2xl p-4">
-            <p className="text-xs text-muted-foreground mb-3 uppercase tracking-wider font-600 text-center">
-              Preview
-            </p>
-            <div
-              className="sticker-canvas mx-auto max-w-[180px] flex-col gap-2"
-              style={{ background: selectedBg.style }}
-            >
-              <div className="text-5xl">{selectedAvatar.emoji}</div>
-              <div className="text-xl">{selectedBadge.emoji}</div>
-              {chant && (
-                <div className="absolute bottom-3 left-2 right-2 text-center">
-                  <span
-                    className="text-xs font-700 text-white"
-                    style={{ textShadow: "0 1px 4px rgba(0,0,0,0.8)" }}
-                  >
-                    {chant}
-                  </span>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
+          )}
+        </motion.div>
       </AnimatePresence>
 
       {!created && (
         <>
-          {/* Avatar Picker */}
           <div className="card-glass rounded-2xl p-4">
-            <p className="text-sm font-700 text-foreground mb-3">
-              Choose Avatar
+            <p className="text-sm font-bold text-foreground mb-3">
+              Choose Team Color
             </p>
-            <div className="grid grid-cols-6 gap-2">
-              {AVATARS.map((a, idx) => {
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+              {TEAM_COLORS.map((t, i) => (
+                <button
+                  type="button"
+                  key={t.id}
+                  data-ocid={`sticker.team_color.item.${i + 1}`}
+                  onClick={() => setTeamColor(t.id)}
+                  className="flex-shrink-0 flex flex-col items-center gap-1.5 transition-all"
+                >
+                  <div
+                    className="h-10 rounded-full transition-all"
+                    style={{
+                      background: t.style,
+                      width: "80px",
+                      border:
+                        teamColor === t.id
+                          ? "2px solid oklch(0.88 0.18 90)"
+                          : "2px solid transparent",
+                      boxShadow:
+                        teamColor === t.id
+                          ? "0 0 10px oklch(0.88 0.18 90 / 0.6)"
+                          : "none",
+                    }}
+                  />
+                  <span
+                    className="text-xs font-semibold"
+                    style={{
+                      color:
+                        teamColor === t.id
+                          ? "oklch(0.88 0.18 90)"
+                          : "oklch(0.65 0.04 255)",
+                    }}
+                  >
+                    {t.name}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="card-glass rounded-2xl p-4">
+            <p className="text-sm font-bold text-foreground mb-3">
+              Choose Character
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              {CHARACTERS.map((c, i) => {
                 const isPremiumLocked =
-                  a.premium && !unlockedPremium.includes(a.id);
+                  c.premium && !unlockedPremium.includes(c.id);
+                const isPremiumUnlocked =
+                  c.premium && unlockedPremium.includes(c.id);
+                const isSelected = character === c.id;
                 return (
                   <button
                     type="button"
-                    key={a.id}
-                    data-ocid={
-                      a.premium
-                        ? `sticker.premium_unlock.button.${idx + 1}`
-                        : undefined
-                    }
-                    onClick={() => handleAvatarClick(a)}
-                    className="aspect-square rounded-xl flex items-center justify-center text-2xl transition-all relative overflow-hidden"
+                    key={c.id}
+                    data-ocid={`sticker.character.item.${i + 1}`}
+                    onClick={() => handleCharacterClick(c)}
+                    className="aspect-square rounded-xl flex flex-col items-center justify-center gap-1 transition-all relative overflow-hidden"
                     style={{
-                      background:
-                        avatar === a.id
-                          ? "oklch(0.65 0.18 220 / 0.3)"
-                          : isPremiumLocked
-                            ? "oklch(0.18 0.04 80)"
-                            : "oklch(0.22 0.04 255)",
-                      border: `1px solid ${
-                        avatar === a.id
-                          ? "oklch(0.65 0.18 220)"
-                          : isPremiumLocked
-                            ? "oklch(0.6 0.15 80 / 0.6)"
-                            : "oklch(0.3 0.04 255)"
-                      }`,
-                      boxShadow:
-                        avatar === a.id
-                          ? "0 0 10px oklch(0.65 0.18 220 / 0.4)"
-                          : isPremiumLocked
-                            ? "0 0 8px oklch(0.6 0.15 80 / 0.3)"
-                            : "none",
+                      background: isSelected
+                        ? "oklch(0.65 0.18 220 / 0.25)"
+                        : isPremiumLocked
+                          ? "oklch(0.18 0.04 80 / 0.8)"
+                          : "oklch(0.22 0.04 255 / 0.5)",
+                      border: `1.5px solid ${isSelected ? "oklch(0.88 0.18 90)" : isPremiumLocked ? "oklch(0.65 0.15 80 / 0.5)" : "oklch(0.32 0.06 255)"}`,
+                      boxShadow: isSelected
+                        ? "0 0 12px oklch(0.88 0.18 90 / 0.45)"
+                        : "none",
                     }}
                   >
-                    {isPremiumLocked ? (
-                      <div className="flex flex-col items-center justify-center">
-                        <span className="text-base">🔒</span>
-                        <span
-                          className="text-[8px] font-700 mt-0.5"
-                          style={{ color: "oklch(0.75 0.15 80)" }}
-                        >
-                          25🪙
-                        </span>
-                      </div>
-                    ) : (
-                      <span>{a.emoji}</span>
+                    {!c.premium && (
+                      <span
+                        className="absolute top-1 right-1 text-[9px] font-bold px-1 py-0.5 rounded"
+                        style={{
+                          background: "oklch(0.45 0.18 145)",
+                          color: "white",
+                        }}
+                      >
+                        FREE
+                      </span>
                     )}
-                    {a.premium && unlockedPremium.includes(a.id) && (
-                      <span className="absolute top-0.5 right-0.5 text-[8px]">
+                    {isPremiumLocked && (
+                      <span
+                        className="absolute top-1 right-1 text-[9px] font-bold px-1 py-0.5 rounded"
+                        style={{
+                          background: "oklch(0.5 0.18 80)",
+                          color: "white",
+                        }}
+                      >
+                        25🪙
+                      </span>
+                    )}
+                    {isPremiumUnlocked && (
+                      <span className="absolute top-1 right-1 text-[9px]">
                         👑
                       </span>
                     )}
+                    {isPremiumLocked ? (
+                      <>
+                        <span className="text-3xl opacity-40">{c.emoji}</span>
+                        <span className="text-lg">🔒</span>
+                      </>
+                    ) : (
+                      <span className="text-4xl">{c.emoji}</span>
+                    )}
+                    <span
+                      className="text-[10px] font-semibold text-center leading-tight px-1"
+                      style={{
+                        color: isPremiumLocked
+                          ? "oklch(0.55 0.08 80)"
+                          : "oklch(0.75 0.04 255)",
+                      }}
+                    >
+                      {c.label}
+                    </span>
                   </button>
                 );
               })}
             </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              👑 Premium avatars cost 25 🪙 to unlock
+            <p className="text-xs text-muted-foreground mt-2 text-center">
+              👑 Premium characters cost 25 🪙 to unlock
             </p>
           </div>
 
-          {/* Chant Input */}
           <div className="card-glass rounded-2xl p-4">
-            <p className="text-sm font-700 text-foreground mb-3">
-              Add Fan Chant
+            <p className="text-sm font-bold text-foreground mb-3">
+              Add Caption
             </p>
             <Input
-              data-ocid="sticker.editor"
-              value={chant}
-              onChange={(e) => setChant(e.target.value)}
-              placeholder="e.g. Jeetega Bhai India!"
+              data-ocid="sticker.caption.input"
+              value={caption}
+              onChange={(e) => setCaption(e.target.value)}
+              placeholder="e.g. Jeetega Bhai India! 🔥"
               className="bg-secondary border-border text-foreground placeholder:text-muted-foreground"
               maxLength={30}
             />
-          </div>
-
-          {/* Badge & BG */}
-          <div className="card-glass rounded-2xl p-4">
-            <p className="text-sm font-700 text-foreground mb-3">Badge</p>
-            <div className="flex gap-2">
-              {BADGES.map((b) => (
-                <button
-                  type="button"
-                  key={b.id}
-                  onClick={() => setBadge(b.id)}
-                  className="flex-1 aspect-square rounded-xl text-2xl flex items-center justify-center transition-all"
-                  style={{
-                    background:
-                      badge === b.id
-                        ? "oklch(0.88 0.18 90 / 0.2)"
-                        : "oklch(0.22 0.04 255)",
-                    border: `1px solid ${
-                      badge === b.id
-                        ? "oklch(0.88 0.18 90)"
-                        : "oklch(0.3 0.04 255)"
-                    }`,
-                  }}
-                >
-                  {b.emoji}
-                </button>
-              ))}
-            </div>
-
-            <p className="text-sm font-700 text-foreground mb-3 mt-4">
-              Background
+            <p className="text-xs text-muted-foreground mt-1 text-right">
+              {caption.length}/30
             </p>
-            <div className="grid grid-cols-6 gap-2">
-              {BACKGROUNDS.map((b) => (
-                <button
-                  type="button"
-                  key={b.id}
-                  onClick={() => setBg(b.id)}
-                  className="aspect-square rounded-xl transition-all"
-                  style={{
-                    background: b.style,
-                    border: `2px solid ${
-                      bg === b.id ? "oklch(0.88 0.18 90)" : "transparent"
-                    }`,
-                    boxShadow:
-                      bg === b.id
-                        ? "0 0 8px oklch(0.88 0.18 90 / 0.5)"
-                        : "none",
-                  }}
-                />
-              ))}
-            </div>
           </div>
 
           <Button
             data-ocid="sticker.create.button"
             onClick={handleCreate}
-            className="w-full h-12 font-display font-700 text-lg text-accent-foreground glow-orange"
+            className="w-full h-12 font-bold text-lg glow-orange"
             style={{
               background:
                 "linear-gradient(135deg, oklch(0.72 0.18 50), oklch(0.78 0.2 40))",
