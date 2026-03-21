@@ -21,7 +21,8 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 const ENTRY_FEE = 20;
-const WIN_REWARD = 70;
+const COMMISSION_PCT = 0.25;
+const PAYOUT_PCT = 0.75;
 
 interface Props {
   spendCoins: (n: number, type: string, roomId?: string) => Promise<boolean>;
@@ -99,14 +100,12 @@ export default function FriendsRoom({
   >([]);
   const timerRefs = useRef<Record<number, ReturnType<typeof setInterval>>>({});
 
-  // Pre-fill join code from URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("room");
     if (code) setJoinCode(code.toUpperCase());
   }, []);
 
-  // Subscribe to active room
   useEffect(() => {
     if (!activeRoom?.id) return;
     const unsub = onSnapshot(doc(db, "rooms", activeRoom.id), (snap) => {
@@ -128,7 +127,6 @@ export default function FriendsRoom({
     return unsub;
   }, [activeRoom?.id, userId, username]);
 
-  // Cleanup timers
   useEffect(() => {
     return () => {
       Object.values(timerRefs.current).forEach(clearInterval);
@@ -264,19 +262,26 @@ export default function FriendsRoom({
         }));
 
         if (correct) {
-          await addCoins(WIN_REWARD, "room_winner", activeRoom?.roomId);
+          const pool = activeRoom?.totalPool || ENTRY_FEE;
+          const winAmount = Math.floor(pool * PAYOUT_PCT);
+          const commission = pool - winAmount;
+          await addCoins(winAmount, "room_winner", activeRoom?.roomId);
           if (activeRoom?.id) {
             await updateDoc(doc(db, "rooms", activeRoom.id), {
               winner: userId,
               status: "completed",
+              commission,
             });
           }
           setLeaderboard((prev) =>
             [...prev]
-              .map((p) => (p.isYou ? { ...p, score: p.score + WIN_REWARD } : p))
+              .map((p) => (p.isYou ? { ...p, score: p.score + winAmount } : p))
               .sort((a, b) => b.score - a.score),
           );
-          toast.success(`🏆 Winner! +${WIN_REWARD} 🪙`, { duration: 3000 });
+          toast.success(
+            `🏆 Winner! +${winAmount} 🪙 (${Math.round(PAYOUT_PCT * 100)}% of pool)`,
+            { duration: 3000 },
+          );
           onGameEnd?.();
         } else {
           toast.error("❌ Wrong prediction!", { duration: 2000 });
@@ -287,7 +292,10 @@ export default function FriendsRoom({
     timerRefs.current[cardId] = interval;
   };
 
-  // Lobby View
+  const pool = activeRoom?.totalPool || ENTRY_FEE;
+  const winPreview = Math.floor(pool * PAYOUT_PCT);
+  const commissionPreview = pool - winPreview;
+
   if (view === "lobby") {
     return (
       <div className="px-4 py-6 space-y-5">
@@ -296,7 +304,7 @@ export default function FriendsRoom({
             👥 Friends Room
           </h2>
           <p className="text-muted-foreground text-xs mt-0.5">
-            Play with friends, win big!
+            Play with friends, top player takes the prize!
           </p>
         </div>
 
@@ -336,7 +344,7 @@ export default function FriendsRoom({
             value={joinCode}
             onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
             maxLength={6}
-            className="bg-secondary border-border text-foreground placeholder:text-muted-foreground h-11 tracking-widest text-center text-lg font-700 uppercase"
+            className="bg-secondary border-border text-foreground placeholder:text-muted-foreground h-11 tracking-widest text-center text-lg font-display"
           />
           <Button
             data-ocid="friends_room.join.button"
@@ -344,30 +352,45 @@ export default function FriendsRoom({
             disabled={joinCode.length !== 6}
             className="w-full h-11 font-display font-700"
             style={{
-              background: "oklch(0.45 0.18 260 / 0.3)",
-              border: "1px solid oklch(0.6 0.18 260 / 0.5)",
-              color: "oklch(0.85 0.12 260)",
+              background:
+                joinCode.length === 6
+                  ? "linear-gradient(135deg, oklch(0.65 0.2 220), oklch(0.7 0.22 230))"
+                  : "oklch(0.22 0.04 255)",
+              color: "oklch(0.9 0.02 240)",
             }}
           >
             Join Room — {ENTRY_FEE} 🪙
           </Button>
         </div>
 
-        <div className="card-glass rounded-2xl p-4 space-y-2">
-          <h3 className="font-display text-sm font-700 text-foreground mb-2">
+        {/* How it works */}
+        <div
+          className="rounded-2xl p-4 space-y-2"
+          style={{
+            background: "oklch(0.16 0.04 255 / 0.6)",
+            border: "1px solid oklch(0.28 0.06 255 / 0.5)",
+          }}
+        >
+          <h4
+            className="font-display text-sm font-700"
+            style={{ color: "oklch(0.75 0.1 255)" }}
+          >
             ℹ️ How it works
-          </h3>
-          {[
-            { icon: "🎫", text: `Pay ${ENTRY_FEE} coins entry fee` },
-            { icon: "🔗", text: "Invite friends with your room code" },
-            { icon: "🏑", text: "Predict match events" },
-            { icon: "🏆", text: `Winner gets ${WIN_REWARD} coins!` },
-          ].map((step) => (
-            <div key={step.icon} className="flex items-center gap-3">
-              <span className="text-xl">{step.icon}</span>
-              <span className="text-sm text-muted-foreground">{step.text}</span>
-            </div>
-          ))}
+          </h4>
+          <ul
+            className="text-xs space-y-1"
+            style={{ color: "oklch(0.6 0.07 255)" }}
+          >
+            <li>• Entry fee: {ENTRY_FEE} coins per player</li>
+            <li>
+              • Top player wins{" "}
+              <strong style={{ color: "oklch(0.82 0.18 90)" }}>
+                {Math.round(PAYOUT_PCT * 100)}% of the pool!
+              </strong>
+            </li>
+            <li>• Admin commission: {Math.round(COMMISSION_PCT * 100)}%</li>
+            <li>• Invite friends with your room code</li>
+          </ul>
         </div>
       </div>
     );
@@ -375,204 +398,192 @@ export default function FriendsRoom({
 
   return (
     <div className="px-4 py-4 space-y-4">
-      <div className="card-glass rounded-2xl p-4">
-        <div className="flex items-center justify-between mb-2">
-          <div>
-            <h3 className="font-display font-700 text-foreground">
-              🏠 Room Active
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              {activeRoom?.players.length || 0} players joined
-            </p>
-          </div>
-          <div
-            className="px-3 py-1 rounded-xl"
-            style={{ background: "oklch(0.22 0.04 255)" }}
-          >
-            <span
-              className="font-display font-800 text-lg tracking-widest"
-              style={{ color: "oklch(0.85 0.18 50)" }}
-            >
-              {activeRoom?.roomId}
-            </span>
-          </div>
+      {/* Room header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-display text-lg font-800 text-foreground">
+            🏠 Room: {activeRoom?.roomId}
+          </h3>
+          <p className="text-xs" style={{ color: "oklch(0.65 0.08 255)" }}>
+            Pool: {pool} 🪙 • Winner gets ~{winPreview} 🪙 • Commission:{" "}
+            {commissionPreview} 🪙
+          </p>
         </div>
-        <div className="flex gap-2">
-          <Button
-            data-ocid="friends_room.invite.button"
-            onClick={handleInvite}
-            size="sm"
-            className="flex-1 h-9 text-xs font-700"
-            style={{
-              background: "oklch(0.45 0.18 260 / 0.3)",
-              border: "1px solid oklch(0.6 0.18 260 / 0.5)",
-              color: "oklch(0.85 0.12 260)",
-            }}
-          >
-            🔗 Invite Friends
-          </Button>
-          <Button
-            data-ocid="friends_room.leave.button"
-            onClick={handleLeave}
-            size="sm"
-            variant="ghost"
-            className="h-9 text-xs text-muted-foreground hover:text-foreground"
-          >
-            Leave
-          </Button>
-        </div>
-        <div className="mt-2 flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Pool:</span>
-          <span
-            className="text-xs font-700"
-            style={{ color: "oklch(0.85 0.18 80)" }}
-          >
-            {activeRoom?.totalPool || 0} 🪙 • Winner gets {WIN_REWARD} 🪙
-          </span>
-        </div>
+        <Button
+          data-ocid="friends_room.leave.button"
+          onClick={handleLeave}
+          variant="ghost"
+          className="text-xs h-8 px-3"
+          style={{ color: "oklch(0.65 0.15 15)" }}
+        >
+          Leave
+        </Button>
       </div>
 
-      <h3 className="font-display text-sm font-700 text-muted-foreground uppercase tracking-wider">
-        🎯 Make Predictions
-      </h3>
+      {/* Players count */}
+      <div
+        className="flex items-center justify-between px-4 py-2.5 rounded-xl"
+        style={{
+          background: "oklch(0.18 0.04 250 / 0.6)",
+          border: "1px solid oklch(0.3 0.06 250 / 0.4)",
+        }}
+      >
+        <span className="text-xs" style={{ color: "oklch(0.65 0.08 250)" }}>
+          👥 {activeRoom?.players.length || 1} player
+          {(activeRoom?.players.length || 1) > 1 ? "s" : ""} in room
+        </span>
+        <button
+          type="button"
+          data-ocid="friends_room.invite.button"
+          onClick={handleInvite}
+          className="text-xs font-700 px-3 py-1 rounded-full"
+          style={{
+            background: "oklch(0.65 0.18 220 / 0.2)",
+            color: "oklch(0.75 0.15 220)",
+            border: "1px solid oklch(0.55 0.15 220 / 0.4)",
+          }}
+        >
+          📎 Invite
+        </button>
+      </div>
 
-      {PREDICTIONS.map((pred, idx) => {
-        const state = cardStates[pred.id];
-        const selected = cardSelections[pred.id];
-        const timeLeft = cardTimers[pred.id];
-        const isResolving = state === "resolving";
-        const isCorrect = state === "correct";
-        const isWrong = state === "wrong";
-        const isDone = isCorrect || isWrong;
+      {/* Prediction Cards */}
+      <div className="grid grid-cols-2 gap-3">
+        {PREDICTIONS.map((pred) => {
+          const state = cardStates[pred.id];
+          const selected = cardSelections[pred.id];
+          const timer = cardTimers[pred.id];
 
-        return (
-          <motion.div
-            key={pred.id}
-            data-ocid={`friends_room.prediction.card.${idx + 1}`}
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: idx * 0.07 }}
-            className="card-glass rounded-2xl p-4"
-            style={{
-              boxShadow: isCorrect
-                ? "0 0 20px oklch(0.62 0.2 140 / 0.4)"
-                : isWrong
-                  ? "0 0 20px oklch(0.62 0.22 15 / 0.4)"
-                  : "none",
-            }}
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
+          return (
+            <motion.div
+              key={pred.id}
+              data-ocid={`friends_room.prediction.item.${pred.id}`}
+              className="rounded-2xl p-3 space-y-2"
+              style={{
+                background:
+                  state === "correct"
+                    ? "oklch(0.2 0.1 145)"
+                    : state === "wrong"
+                      ? "oklch(0.2 0.1 15)"
+                      : "oklch(0.17 0.04 250)",
+                border:
+                  state === "correct"
+                    ? "1px solid oklch(0.6 0.2 145 / 0.6)"
+                    : state === "wrong"
+                      ? "1px solid oklch(0.6 0.2 15 / 0.6)"
+                      : "1px solid oklch(0.28 0.06 250 / 0.5)",
+              }}
+              animate={
+                state === "correct"
+                  ? { scale: [1, 1.04, 1] }
+                  : state === "wrong"
+                    ? { x: [-4, 4, -4, 0] }
+                    : {}
+              }
+              transition={{ duration: 0.4 }}
+            >
+              <div className="flex items-center gap-1.5">
                 <span className="text-xl">{pred.emoji}</span>
-                <p className="font-display text-sm font-700 text-foreground">
+                <p className="font-display text-xs font-700 text-foreground">
                   {pred.question}
                 </p>
               </div>
-              {isResolving && (
-                <div
-                  className="text-xs font-700 px-2 py-1 rounded-full"
-                  style={{
-                    background:
-                      timeLeft <= 5
-                        ? "oklch(0.62 0.22 15 / 0.2)"
-                        : "oklch(0.72 0.18 50 / 0.15)",
-                    color:
-                      timeLeft <= 5
-                        ? "oklch(0.75 0.2 15)"
-                        : "oklch(0.82 0.18 55)",
-                    border: `1px solid ${timeLeft <= 5 ? "oklch(0.62 0.22 15 / 0.4)" : "oklch(0.72 0.18 50 / 0.4)"}`,
-                  }}
-                >
-                  ⏱ {timeLeft}s
-                </div>
-              )}
-              {isDone && (
-                <Badge
-                  style={{
-                    background: isCorrect
-                      ? "oklch(0.62 0.2 140 / 0.2)"
-                      : "oklch(0.62 0.22 15 / 0.2)",
-                    color: isCorrect
-                      ? "oklch(0.75 0.18 140)"
-                      : "oklch(0.75 0.2 15)",
-                    border: "none",
-                  }}
-                >
-                  {isCorrect ? `+${WIN_REWARD} 🪙` : "❌ Lost"}
-                </Badge>
-              )}
-            </div>
 
-            <AnimatePresence mode="wait">
               {state === "idle" && (
-                <motion.div
-                  key="options"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="grid grid-cols-2 gap-2"
-                >
-                  {pred.options.map((opt, oi) => (
+                <div className="space-y-1.5">
+                  {pred.options.map((opt) => (
                     <button
                       key={opt}
                       type="button"
-                      data-ocid={`friends_room.prediction.option.${oi + 1}`}
+                      data-ocid={`friends_room.prediction.option.${pred.id}`}
                       onClick={() => selectPrediction(pred.id, opt)}
-                      className="py-3 rounded-xl text-sm font-600 transition-all"
+                      className="w-full text-xs font-600 py-2 px-3 rounded-xl text-left transition-colors"
                       style={{
-                        background: "oklch(0.2 0.04 255)",
-                        border: "1px solid oklch(0.3 0.04 255)",
-                        color: "oklch(0.75 0.05 255)",
+                        background: "oklch(0.22 0.05 250 / 0.6)",
+                        border: "1px solid oklch(0.32 0.07 250 / 0.4)",
+                        color: "oklch(0.82 0.06 250)",
                       }}
                     >
                       {opt}
                     </button>
                   ))}
-                </motion.div>
+                </div>
               )}
-              {(isResolving || isDone) && (
-                <motion.div
-                  key="status"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="py-3 rounded-xl text-center"
-                  style={{
-                    background: isCorrect
-                      ? "oklch(0.62 0.2 140 / 0.1)"
-                      : isWrong
-                        ? "oklch(0.62 0.22 15 / 0.1)"
-                        : "oklch(0.72 0.18 50 / 0.08)",
-                    border: `1px solid ${isCorrect ? "oklch(0.62 0.2 140 / 0.3)" : isWrong ? "oklch(0.62 0.22 15 / 0.3)" : "oklch(0.72 0.18 50 / 0.2)"}`,
-                  }}
-                >
+
+              {(state === "resolving" || state === "selected") && (
+                <div className="text-center">
+                  <p
+                    className="text-xs font-600"
+                    style={{ color: "oklch(0.75 0.15 80)" }}
+                  >
+                    ✓ {selected}
+                  </p>
+                  <p
+                    className="font-display text-2xl font-800 mt-1"
+                    style={{ color: "oklch(0.88 0.18 90)" }}
+                  >
+                    {timer}s
+                  </p>
+                  <p
+                    className="text-[10px] mt-0.5"
+                    style={{ color: "oklch(0.55 0.06 250)" }}
+                  >
+                    resolving...
+                  </p>
+                </div>
+              )}
+
+              {state === "correct" && (
+                <div className="text-center">
                   <p
                     className="text-sm font-700"
-                    style={{
-                      color: isCorrect
-                        ? "oklch(0.75 0.2 140)"
-                        : isWrong
-                          ? "oklch(0.75 0.2 15)"
-                          : "oklch(0.82 0.14 60)",
-                    }}
+                    style={{ color: "oklch(0.75 0.2 145)" }}
                   >
-                    {isResolving
-                      ? `⏳ Awaiting... (${selected})`
-                      : isCorrect
-                        ? `🏆 Correct! +${WIN_REWARD} 🪙`
-                        : "❌ Wrong guess"}
+                    ✅ Correct!
                   </p>
-                </motion.div>
+                  <p
+                    className="text-xs mt-0.5"
+                    style={{ color: "oklch(0.65 0.15 145)" }}
+                  >
+                    +{winPreview} 🪙
+                  </p>
+                </div>
               )}
-            </AnimatePresence>
-          </motion.div>
-        );
-      })}
 
-      {leaderboard.length > 0 && (
-        <div className="card-glass rounded-2xl p-4">
-          <h3 className="font-display text-sm font-700 text-foreground mb-3">
-            🏆 Room Leaderboard
-          </h3>
+              {state === "wrong" && (
+                <div className="text-center">
+                  <p
+                    className="text-sm font-700"
+                    style={{ color: "oklch(0.65 0.2 15)" }}
+                  >
+                    ❌ Wrong
+                  </p>
+                </div>
+              )}
+            </motion.div>
+          );
+        })}
+      </div>
+
+      {/* Leaderboard */}
+      <div
+        className="rounded-2xl p-4"
+        style={{
+          background: "oklch(0.16 0.04 255 / 0.6)",
+          border: "1px solid oklch(0.28 0.06 255 / 0.4)",
+        }}
+      >
+        <h4
+          className="font-display text-sm font-700 mb-3"
+          style={{ color: "oklch(0.75 0.1 255)" }}
+        >
+          🏅 Leaderboard
+        </h4>
+        {leaderboard.length === 0 ? (
+          <p className="text-xs text-center text-muted-foreground">
+            Waiting for players...
+          </p>
+        ) : (
           <div className="space-y-2">
             {leaderboard.map((player, i) => (
               <div
@@ -581,53 +592,45 @@ export default function FriendsRoom({
                 className="flex items-center justify-between px-3 py-2 rounded-xl"
                 style={{
                   background: player.isYou
-                    ? "oklch(0.72 0.18 50 / 0.1)"
-                    : "oklch(0.18 0.03 255)",
+                    ? "oklch(0.22 0.07 50 / 0.5)"
+                    : "oklch(0.2 0.04 255 / 0.4)",
                   border: player.isYou
-                    ? "1px solid oklch(0.72 0.18 50 / 0.3)"
-                    : "1px solid oklch(0.25 0.04 255)",
+                    ? "1px solid oklch(0.55 0.15 50 / 0.4)"
+                    : "1px solid oklch(0.28 0.05 255 / 0.3)",
                 }}
               >
-                <div className="flex items-center gap-2">
-                  <span
-                    className="font-display font-700 text-sm"
-                    style={{
-                      color:
-                        i === 0 ? "oklch(0.85 0.2 80)" : "oklch(0.55 0.05 255)",
-                    }}
-                  >
-                    #{i + 1}
-                  </span>
-                  <span className="text-sm font-600 text-foreground">
-                    {player.name} {player.isYou ? "(You)" : ""}
-                  </span>
-                  {i === 0 && (
+                <span className="text-xs font-700 text-foreground">
+                  #{i + 1} {player.name}
+                  {player.isYou && (
                     <Badge
+                      className="ml-2 text-[9px] py-0"
                       style={{
-                        background: "oklch(0.85 0.2 80 / 0.2)",
-                        color: "oklch(0.85 0.2 80)",
-                        border: "none",
-                        fontSize: "10px",
+                        background: "oklch(0.55 0.18 50 / 0.3)",
+                        color: "oklch(0.8 0.15 50)",
                       }}
                     >
-                      🏆 WINNER
+                      YOU
                     </Badge>
                   )}
-                </div>
+                </span>
                 <span
-                  className="font-display font-700 text-sm"
-                  style={{ color: "oklch(0.85 0.18 80)" }}
+                  className="text-xs font-800"
+                  style={{ color: "oklch(0.85 0.18 90)" }}
                 >
                   {player.score} 🪙
                 </span>
               </div>
             ))}
           </div>
-          <p className="text-xs text-center text-muted-foreground mt-3">
-            App commission: 10 🪙
-          </p>
-        </div>
-      )}
+        )}
+        <p
+          className="text-[10px] text-center mt-3"
+          style={{ color: "oklch(0.45 0.05 255)" }}
+        >
+          Admin commission: {Math.round(COMMISSION_PCT * 100)}% of pool (
+          {commissionPreview} 🪙)
+        </p>
+      </div>
     </div>
   );
 }

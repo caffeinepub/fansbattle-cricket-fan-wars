@@ -109,7 +109,6 @@ export default function RewardedAdModal({ isOpen, onClose, onReward }: Props) {
                 Create your dream team. Win real cash daily.
               </div>
 
-              {/* Progress bar */}
               {!done && (
                 <div className="mb-6">
                   <Progress
@@ -142,7 +141,7 @@ export default function RewardedAdModal({ isOpen, onClose, onReward }: Props) {
                     className="text-sm font-bold"
                     style={{ color: "oklch(0.88 0.18 70)" }}
                   >
-                    🎉 You earned a reward!
+                    🎉 You earned 2-5 coins!
                   </p>
                 </motion.div>
               )}
@@ -182,7 +181,7 @@ export default function RewardedAdModal({ isOpen, onClose, onReward }: Props) {
                       : "none",
                   }}
                 >
-                  Collect +20 🪙
+                  Collect Reward 🪙
                 </button>
               </div>
             </div>

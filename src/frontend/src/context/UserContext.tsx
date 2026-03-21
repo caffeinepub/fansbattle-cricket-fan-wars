@@ -1,5 +1,6 @@
 import { db } from "@/lib/firebase";
 import {
+  INITIAL_COINS,
   createFallbackUser,
   createOrGetUserByDeviceId,
   getOrCreateUserId,
@@ -22,10 +23,10 @@ import { toast } from "sonner";
 
 // Suppress unused import warning
 void db;
+void INITIAL_COINS;
 
 const INIT_TIMEOUT_MS = 3000;
 
-/** Race a promise against a timeout. Returns null if timed out. */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   return Promise.race([
     promise,
@@ -61,8 +62,6 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
   const refreshUserData = useCallback(() => setRefreshKey((k) => k + 1), []);
   const initDone = useRef(false);
 
-  // On mount: check localStorage for saved userId, load or create user.
-  // Falls back to a local user if Firestore takes more than 3 seconds.
   useEffect(() => {
     if (initDone.current) return;
     initDone.current = true;
@@ -76,7 +75,6 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
         setUserData(user);
         setCoins(user.coins);
 
-        // If we timed out, still try to persist the user in background
         if (!data) {
           createOrGetUserByDeviceId(uid).catch(() => {
             /* best-effort */
@@ -84,7 +82,6 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
         }
       })
       .catch(() => {
-        // Hard error — use fallback so the app always unblocks
         const user = createFallbackUser(uid);
         setUserId(uid);
         setUserData(user);
@@ -95,7 +92,6 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
-  // Real-time Firestore subscription
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is intentional
   useEffect(() => {
     if (!userId) return;
@@ -112,8 +108,6 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
     return unsub;
   }, [userId, refreshKey]);
 
-  // startPlaying: called manually (e.g. after logout or from login screen).
-  // Also respects the 3-second fallback so "Starting..." never hangs.
   const startPlaying = useCallback(async () => {
     const uid = getOrCreateUserId();
     const data = await withTimeout(
@@ -125,7 +119,6 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
     setUserData(user);
     setCoins(user.coins);
     if (!data) {
-      // Background save
       createOrGetUserByDeviceId(uid).catch(() => {
         /* best-effort */
       });
@@ -145,7 +138,9 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
     async (amount: number, type: string, roomId?: string): Promise<boolean> => {
       if (!userId) return false;
       if (coins < amount) {
-        toast.error("Not enough coins! 🪙", { duration: 2500 });
+        toast.error("Not enough coins! Buy more to continue. 🪙", {
+          duration: 3000,
+        });
         return false;
       }
       await updateCoins(userId, -amount);

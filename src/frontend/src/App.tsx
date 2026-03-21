@@ -15,7 +15,7 @@ import StickerCreator from "@/components/tabs/StickerCreator";
 import VoteBattle from "@/components/tabs/VoteBattle";
 import { Toaster } from "@/components/ui/sonner";
 import { UserContextProvider, useUser } from "@/context/UserContext";
-import { claimDailyReward } from "@/lib/firestore";
+import { DAILY_REWARD_AMOUNT, claimDailyReward } from "@/lib/firestore";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -23,8 +23,8 @@ export type TabId = "live" | "vote" | "sticker" | "friends" | "shop" | "admin";
 
 type AppState = "splash" | "loading" | "login" | "main";
 
-// Daily reward is always 20 coins — matches Firestore logic
-const DAILY_REWARD_COINS = 20;
+const AD_COOLDOWN_SECONDS = 120; // 2 minutes
+const AD_DAILY_CAP = 3;
 
 function getDateString(date: Date = new Date()) {
   return date.toISOString().slice(0, 10);
@@ -46,10 +46,11 @@ function AppInner() {
   const [showInterstitial, setShowInterstitial] = useState(false);
   const [showRewardedAd, setShowRewardedAd] = useState(false);
   const [showTransactionHistory, setShowTransactionHistory] = useState(false);
-  // Track if ad reward has been collected (prevent double-click)
   const [adRewardCollected, setAdRewardCollected] = useState(false);
+  const [dismissedLowBalance, setDismissedLowBalance] = useState(false);
 
-  // After splash completes, move to loading/main/login depending on state
+  const coins = userData?.coins ?? 0;
+
   const handleSplashComplete = () => {
     if (loading) {
       setAppState("loading");
@@ -58,33 +59,35 @@ function AppInner() {
     }
   };
 
-  // When loading finishes (after splash), transition out of loading state
   useEffect(() => {
     if (appState === "loading" && !loading) {
       setAppState(userId ? "main" : "login");
     }
   }, [appState, loading, userId]);
 
-  // When userId becomes set (e.g. after startPlaying on login screen), go to main
   useEffect(() => {
     if (userId && (appState === "login" || appState === "loading")) {
       setAppState("main");
     }
   }, [userId, appState]);
 
-  // Show daily reward modal once per day when entering main
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional - only triggers on appState transition
   useEffect(() => {
     if (appState === "main" && userData) {
       const today = getDateString();
-      // Only show if not already claimed today (check Firestore data)
       if (userData.lastClaimDate !== today) {
         setTimeout(() => setShowDailyReward(true), 800);
       }
     }
   }, [appState]);
 
-  // alreadyClaimed: source of truth is Firestore userData
+  // Reset low balance dismissal when coins increase above threshold
+  useEffect(() => {
+    if (coins >= 10) {
+      setDismissedLowBalance(false);
+    }
+  }, [coins]);
+
   const today = getDateString();
   const alreadyClaimed = userData?.lastClaimDate === today;
 
@@ -103,7 +106,7 @@ function AppInner() {
     }
 
     if (result.success) {
-      toast.success(`🪙 +${DAILY_REWARD_COINS} coins! Daily reward claimed!`, {
+      toast.success(`🪙 +${DAILY_REWARD_AMOUNT} coins! Daily reward claimed!`, {
         duration: 3000,
       });
       setShowDailyReward(false);
@@ -115,10 +118,44 @@ function AppInner() {
 
   const handleAdReward = async () => {
     if (adRewardCollected) return;
+
+    const now = Date.now();
+    const lastAdTime = Number.parseInt(
+      localStorage.getItem("fansbattle_last_ad_time") || "0",
+    );
+    const adDate = localStorage.getItem("fansbattle_ad_date");
+    const todayStr = getDateString();
+    let adCount =
+      adDate === todayStr
+        ? Number.parseInt(
+            localStorage.getItem("fansbattle_ad_count_today") || "0",
+          )
+        : 0;
+
+    if (now - lastAdTime < AD_COOLDOWN_SECONDS * 1000) {
+      const remaining = Math.ceil(
+        (AD_COOLDOWN_SECONDS * 1000 - (now - lastAdTime)) / 1000,
+      );
+      toast.error(`Wait ${remaining}s before watching another ad.`);
+      setShowRewardedAd(false);
+      return;
+    }
+    if (adCount >= AD_DAILY_CAP) {
+      toast.error("Daily ad limit reached. Come back tomorrow!");
+      setShowRewardedAd(false);
+      return;
+    }
+
     setAdRewardCollected(true);
-    await addCoins(20, "ad_reward");
+    const reward = Math.floor(Math.random() * 4) + 2; // 2-5 coins
+    await addCoins(reward, "ad_reward");
+
+    localStorage.setItem("fansbattle_last_ad_time", String(now));
+    localStorage.setItem("fansbattle_ad_date", todayStr);
+    localStorage.setItem("fansbattle_ad_count_today", String(adCount + 1));
+
+    toast.success(`+${reward} coins from ad! 🪙`, { duration: 2500 });
     setShowRewardedAd(false);
-    // Reset for next ad viewing session
     setTimeout(() => setAdRewardCollected(false), 2000);
   };
 
@@ -131,7 +168,6 @@ function AppInner() {
     );
   }
 
-  // Brief loading screen after splash while Firestore resolves
   if (appState === "loading") {
     return (
       <div
@@ -164,6 +200,44 @@ function AppInner() {
         className="flex-1 scrollable-content pb-32"
         style={{ paddingTop: "64px" }}
       >
+        {/* Low balance banner */}
+        {coins < 10 && !dismissedLowBalance && (
+          <div
+            data-ocid="app.low_balance.panel"
+            className="mx-4 mt-3 mb-1 px-4 py-3 rounded-2xl flex items-center justify-between gap-3"
+            style={{
+              background: "oklch(0.22 0.08 15 / 0.8)",
+              border: "1px solid oklch(0.55 0.22 15 / 0.5)",
+            }}
+          >
+            <p className="text-sm font-semibold text-foreground">
+              ⚠️ Low balance! Buy coins to keep playing.
+            </p>
+            <div className="flex gap-2 shrink-0">
+              <button
+                type="button"
+                data-ocid="app.low_balance.buy_button"
+                onClick={() => setActiveTab("shop")}
+                className="text-xs px-3 py-1 rounded-full font-bold"
+                style={{
+                  background: "oklch(0.72 0.22 50)",
+                  color: "oklch(0.12 0.02 50)",
+                }}
+              >
+                Buy
+              </button>
+              <button
+                type="button"
+                data-ocid="app.low_balance.close_button"
+                onClick={() => setDismissedLowBalance(true)}
+                className="text-xs text-muted-foreground"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+
         {activeTab === "live" && (
           <LiveMatch
             addCoins={addCoins}
@@ -171,7 +245,9 @@ function AppInner() {
             onGameEnd={() => setShowInterstitial(true)}
           />
         )}
-        {activeTab === "vote" && <VoteBattle addCoins={addCoins} />}
+        {activeTab === "vote" && (
+          <VoteBattle addCoins={addCoins} spendCoins={spendCoins} />
+        )}
         {activeTab === "sticker" && (
           <StickerCreator addCoins={addCoins} spendCoins={spendCoins} />
         )}
@@ -208,7 +284,7 @@ function AppInner() {
       {showDailyReward && (
         <DailyRewardModal
           streakDay={1}
-          coinsToEarn={DAILY_REWARD_COINS}
+          coinsToEarn={DAILY_REWARD_AMOUNT}
           onClaim={handleClaimDailyReward}
           alreadyClaimed={alreadyClaimed}
           onClose={() => setShowDailyReward(false)}

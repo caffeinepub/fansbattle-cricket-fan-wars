@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { DAILY_REWARD_AMOUNT } from "@/lib/firestore";
 import { motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -14,7 +15,7 @@ const PACKAGES = [
   {
     id: 1,
     name: "Starter",
-    coins: 100,
+    coins: 10,
     price: 10,
     priceStr: "₹10",
     emoji: "🪙",
@@ -23,7 +24,7 @@ const PACKAGES = [
   {
     id: 2,
     name: "Fan Pack",
-    coins: 600,
+    coins: 55,
     price: 50,
     priceStr: "₹50",
     emoji: "⚡",
@@ -32,7 +33,7 @@ const PACKAGES = [
   {
     id: 3,
     name: "Pro Pack",
-    coins: 1500,
+    coins: 120,
     price: 100,
     priceStr: "₹100",
     emoji: "🚀",
@@ -40,9 +41,9 @@ const PACKAGES = [
   },
 ];
 
-const SPIN_RESULTS = [10, 15, 20, 25, 30, 50, 75, 100, 150, 200];
-const SPIN_COST = 20;
 const LAST_CLAIM_KEY = "fansbattle_last_claim";
+const AD_COOLDOWN_SECONDS = 120;
+const AD_DAILY_CAP = 3;
 
 function getDateString() {
   return new Date().toISOString().slice(0, 10);
@@ -62,17 +63,33 @@ function secondsUntilMidnight() {
   return Math.floor((midnight.getTime() - now.getTime()) / 1000);
 }
 
-function generateInviteCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  return Array.from(
-    { length: 6 },
-    () => chars[Math.floor(Math.random() * chars.length)],
-  ).join("");
+function calcCustomCoins(amount: number): number {
+  if (amount >= 100) return Math.floor(amount * 1.2);
+  if (amount >= 50) return Math.floor(amount * 1.1);
+  return amount;
+}
+
+function getAdCooldownRemaining(): number {
+  const lastAdTime = Number.parseInt(
+    localStorage.getItem("fansbattle_last_ad_time") || "0",
+  );
+  const elapsed = Date.now() - lastAdTime;
+  const remaining = AD_COOLDOWN_SECONDS * 1000 - elapsed;
+  return remaining > 0 ? Math.ceil(remaining / 1000) : 0;
+}
+
+function getAdCountToday(): number {
+  const adDate = localStorage.getItem("fansbattle_ad_date");
+  const today = getDateString();
+  if (adDate !== today) return 0;
+  return Number.parseInt(
+    localStorage.getItem("fansbattle_ad_count_today") || "0",
+  );
 }
 
 export default function Shop({
   addCoins,
-  spendCoins,
+  spendCoins: _spendCoins,
   onWatchAd,
   onViewHistory,
 }: Props) {
@@ -80,19 +97,24 @@ export default function Shop({
     return localStorage.getItem(LAST_CLAIM_KEY) === getDateString();
   });
   const [countdown, setCountdown] = useState(() => secondsUntilMidnight());
-  const [isSpinning, setIsSpinning] = useState(false);
-  const [lastResult, setLastResult] = useState<number | null>(null);
-  const [inviteCode] = useState(() => generateInviteCode());
-  const spinRef = useRef<HTMLDivElement>(null);
+  const [customAmount, setCustomAmount] = useState("");
+  const [adCooldown, setAdCooldown] = useState(() => getAdCooldownRemaining());
+  const [adCountToday, setAdCountToday] = useState(() => getAdCountToday());
+
+  const rzpScriptRef = useRef(false);
 
   // Load Razorpay script
   useEffect(() => {
+    if (rzpScriptRef.current) return;
+    rzpScriptRef.current = true;
     const script = document.createElement("script");
     script.src = "https://checkout.razorpay.com/v1/checkout.js";
     script.async = true;
     document.body.appendChild(script);
     return () => {
-      document.body.removeChild(script);
+      if (document.body.contains(script)) {
+        document.body.removeChild(script);
+      }
     };
   }, []);
 
@@ -101,6 +123,8 @@ export default function Shop({
     const check = () => {
       setClaimedToday(localStorage.getItem(LAST_CLAIM_KEY) === getDateString());
       setCountdown(secondsUntilMidnight());
+      setAdCooldown(getAdCooldownRemaining());
+      setAdCountToday(getAdCountToday());
     };
     document.addEventListener("visibilitychange", check);
     return () => document.removeEventListener("visibilitychange", check);
@@ -115,6 +139,17 @@ export default function Shop({
     return () => clearInterval(timer);
   }, [claimedToday]);
 
+  // Ad cooldown ticker
+  useEffect(() => {
+    if (adCooldown <= 0) return;
+    const timer = setInterval(() => {
+      const remaining = getAdCooldownRemaining();
+      setAdCooldown(remaining);
+      if (remaining <= 0) clearInterval(timer);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [adCooldown]);
+
   const handleClaim = async () => {
     if (claimedToday) {
       toast.info("Already claimed today! Come back tomorrow.");
@@ -126,11 +161,13 @@ export default function Shop({
       toast.info("Already claimed today! Come back tomorrow.");
       return;
     }
-    await addCoins(20, "daily_reward");
+    await addCoins(DAILY_REWARD_AMOUNT, "daily_reward");
     localStorage.setItem(LAST_CLAIM_KEY, today);
     setClaimedToday(true);
     setCountdown(secondsUntilMidnight());
-    toast.success("🪙 +20 coins! Daily reward claimed!", { duration: 3000 });
+    toast.success(`🪙 +${DAILY_REWARD_AMOUNT} coins! Daily reward claimed!`, {
+      duration: 3000,
+    });
   };
 
   const handleBuy = (pkg: (typeof PACKAGES)[0]) => {
@@ -154,7 +191,6 @@ export default function Shop({
       },
     };
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rzp = new (
         window as unknown as {
           Razorpay: new (opts: unknown) => { open: () => void };
@@ -162,7 +198,6 @@ export default function Shop({
       ).Razorpay(options);
       rzp.open();
     } catch {
-      // Razorpay not loaded yet (test mode fallback)
       addCoins(pkg.coins, "coin_purchase");
       toast.success(
         `🎉 +${pkg.coins.toLocaleString()} coins added! (test mode)`,
@@ -171,48 +206,68 @@ export default function Shop({
     }
   };
 
-  const handleWatchAd = () => {
-    if (onWatchAd) {
-      onWatchAd();
+  const handleBuyCustom = () => {
+    const amount = Number.parseInt(customAmount);
+    if (!amount || amount < 10) {
+      toast.error("Minimum purchase is ₹10");
       return;
     }
-    addCoins(20, "ad_reward");
-    toast.success("📺 Ad watched! +20 coins earned.", { duration: 2500 });
+    const coins = calcCustomCoins(amount);
+    const options = {
+      key: "rzp_test_placeholder",
+      amount: amount * 100,
+      currency: "INR",
+      name: "FansBattle",
+      description: `${coins} Custom Coins`,
+      handler: async () => {
+        await addCoins(coins, "coin_purchase");
+        toast.success(`🎉 +${coins} coins added!`, { duration: 3000 });
+      },
+      theme: { color: "#f97316" },
+      modal: { ondismiss: () => toast.info("Payment cancelled.") },
+    };
+    try {
+      const rzp = new (
+        window as unknown as {
+          Razorpay: new (opts: unknown) => { open: () => void };
+        }
+      ).Razorpay(options);
+      rzp.open();
+    } catch {
+      addCoins(coins, "coin_purchase");
+      toast.success(`🎉 +${coins} coins added! (test mode)`, {
+        duration: 3000,
+      });
+    }
   };
 
-  const handleSpin = async () => {
-    if (isSpinning) return;
-    const ok = await spendCoins(SPIN_COST, "spin_wheel");
-    if (!ok) return;
-    setIsSpinning(true);
-    setLastResult(null);
-    setTimeout(async () => {
-      const result =
-        SPIN_RESULTS[Math.floor(Math.random() * SPIN_RESULTS.length)];
-      setLastResult(result);
-      setIsSpinning(false);
-      await addCoins(result, "spin_win");
-      toast.success(`+${result} coins! Lucky spin! 🎟️`, { duration: 3000 });
-    }, 1500);
+  const handleWatchAd = () => {
+    if (adCountToday >= AD_DAILY_CAP) {
+      toast.error("Daily ad limit reached. Come back tomorrow!");
+      return;
+    }
+    if (adCooldown > 0) {
+      toast.error(`Wait ${adCooldown}s before watching another ad.`);
+      return;
+    }
+    if (onWatchAd) {
+      onWatchAd();
+    }
   };
 
-  const handleCopyInvite = () => {
-    void navigator.clipboard.writeText(
-      `Join FansBattle with my code: ${inviteCode}`,
-    );
-    toast.success("📋 Invite link copied!", { duration: 2000 });
-  };
+  const customCoinsPreview = (() => {
+    const amt = Number.parseInt(customAmount);
+    if (!amt || amt < 10) return null;
+    return calcCustomCoins(amt);
+  })();
 
-  const handleClaimInviteReward = async () => {
-    await addCoins(50, "invite_reward");
-    toast.success("👥 Friend invited! +50 coins!", { duration: 2500 });
-  };
+  const adDisabled = adCooldown > 0 || adCountToday >= AD_DAILY_CAP;
 
   return (
     <div className="px-4 py-4 space-y-4">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <span className="text-2xl">🛙️</span>
+          <span className="text-2xl">🛍️</span>
           <div>
             <h2 className="font-display text-xl font-800 text-foreground">
               Shop
@@ -257,7 +312,7 @@ export default function Shop({
             Daily Free
           </p>
           <h3 className="font-display text-2xl font-800 text-foreground mt-1">
-            Claim 20 Coins
+            Claim {DAILY_REWARD_AMOUNT} Coins
           </h3>
           {claimedToday ? (
             <>
@@ -298,163 +353,69 @@ export default function Shop({
       </motion.div>
 
       {/* Watch Ad */}
-      <motion.button
-        data-ocid="shop.watch_ad.button"
-        onClick={handleWatchAd}
-        whileTap={{ scale: 0.97 }}
-        className="w-full py-3 rounded-2xl flex items-center justify-center gap-3 font-display font-700 text-foreground transition-colors"
-        style={{
-          background: "oklch(0.65 0.18 220 / 0.15)",
-          border: "1px solid oklch(0.65 0.18 220 / 0.4)",
-        }}
-      >
-        <span className="text-2xl">📺</span>
-        <span>Watch Ad</span>
-        <span
-          className="text-xs font-700 px-2 py-0.5 rounded-full ml-1"
-          style={{
-            background: "oklch(0.88 0.18 90 / 0.2)",
-            color: "oklch(0.88 0.18 90)",
-            border: "1px solid oklch(0.88 0.18 90 / 0.4)",
-          }}
-        >
-          +20 🪙
-        </span>
-      </motion.button>
-
-      {/* Spin Wheel */}
       <motion.div
-        initial={{ opacity: 0, y: 10 }}
+        initial={{ opacity: 0, y: 5 }}
         animate={{ opacity: 1, y: 0 }}
-        className="rounded-2xl p-4 space-y-3"
+        className="rounded-2xl p-4"
         style={{
-          background:
-            "linear-gradient(135deg, oklch(0.18 0.08 290), oklch(0.14 0.05 290))",
-          border: "1px solid oklch(0.55 0.18 290 / 0.4)",
+          background: "oklch(0.65 0.18 220 / 0.08)",
+          border: "1px solid oklch(0.65 0.18 220 / 0.35)",
         }}
       >
-        <div className="flex items-center gap-2">
-          <span className="text-xl">🎡</span>
-          <div>
-            <h3 className="font-display text-base font-700 text-foreground">
-              Spin Wheel
-            </h3>
-            <p className="text-xs" style={{ color: "oklch(0.65 0.12 290)" }}>
-              Win up to 200 🪙!
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-col items-center gap-3">
-          <div
-            ref={spinRef}
-            className="text-7xl select-none"
-            style={{
-              display: "inline-block",
-              animation: isSpinning
-                ? "spin-wheel 0.3s linear infinite"
-                : "none",
-              filter: isSpinning
-                ? "drop-shadow(0 0 12px oklch(0.7 0.2 290))"
-                : "none",
-            }}
-          >
-            🎡
-          </div>
-          {lastResult !== null && !isSpinning && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.5 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="text-center"
-            >
-              <span
-                className="font-display text-2xl font-800"
-                style={{ color: "oklch(0.88 0.18 90)" }}
-              >
-                +{lastResult} 🪙
-              </span>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Lucky spin!
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">📺</span>
+            <div>
+              <p className="font-display text-sm font-700 text-foreground">
+                Watch Ad
               </p>
-            </motion.div>
-          )}
-          <Button
-            data-ocid="shop.spin_wheel.button"
-            onClick={handleSpin}
-            disabled={isSpinning}
-            className="w-full font-display font-700 h-11"
+              <p className="text-xs" style={{ color: "oklch(0.6 0.08 220)" }}>
+                {adCountToday >= AD_DAILY_CAP
+                  ? "Daily limit reached"
+                  : adCooldown > 0
+                    ? `Cooldown: ${adCooldown}s`
+                    : `${AD_DAILY_CAP - adCountToday} watches left today`}
+              </p>
+            </div>
+          </div>
+          <span
+            className="text-xs font-700 px-2 py-0.5 rounded-full"
             style={{
-              background: isSpinning
-                ? "oklch(0.35 0.08 290)"
-                : "linear-gradient(135deg, oklch(0.6 0.2 290), oklch(0.65 0.22 300))",
-              color: "white",
+              background: adDisabled
+                ? "oklch(0.3 0.04 220 / 0.3)"
+                : "oklch(0.88 0.18 90 / 0.2)",
+              color: adDisabled ? "oklch(0.5 0.05 220)" : "oklch(0.88 0.18 90)",
+              border: adDisabled
+                ? "1px solid oklch(0.4 0.05 220 / 0.3)"
+                : "1px solid oklch(0.88 0.18 90 / 0.4)",
             }}
           >
-            {isSpinning ? "Spinning..." : `Spin Wheel — ${SPIN_COST} 🪙`}
-          </Button>
-        </div>
-      </motion.div>
-
-      {/* Invite Friends */}
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="rounded-2xl p-4 space-y-3"
-        style={{
-          background:
-            "linear-gradient(135deg, oklch(0.18 0.06 140), oklch(0.14 0.04 140))",
-          border: "1px solid oklch(0.55 0.15 140 / 0.4)",
-        }}
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-xl">👥</span>
-          <div>
-            <h3 className="font-display text-base font-700 text-foreground">
-              Invite Friends
-            </h3>
-            <p className="text-xs" style={{ color: "oklch(0.65 0.12 140)" }}>
-              Earn +50 🪙 per invite!
-            </p>
-          </div>
-        </div>
-        <div
-          className="flex items-center justify-between px-3 py-2 rounded-xl"
-          style={{
-            background: "oklch(0.22 0.06 140 / 0.5)",
-            border: "1px solid oklch(0.5 0.12 140 / 0.3)",
-          }}
-        >
-          <span
-            className="font-display text-lg font-800 tracking-widest"
-            style={{ color: "oklch(0.85 0.15 140)" }}
-          >
-            {inviteCode}
+            +2-5 🪙
           </span>
-          <span className="text-xs text-muted-foreground">Your Code</span>
         </div>
-        <Button
-          data-ocid="shop.invite.button"
-          onClick={handleCopyInvite}
-          className="w-full font-700 h-10"
+        <motion.button
+          data-ocid="shop.watch_ad.button"
+          onClick={handleWatchAd}
+          disabled={adDisabled}
+          whileTap={adDisabled ? {} : { scale: 0.97 }}
+          className="w-full py-2.5 rounded-xl flex items-center justify-center gap-2 font-display font-700 text-sm transition-colors"
           style={{
-            background: "oklch(0.55 0.18 140 / 0.3)",
-            border: "1px solid oklch(0.55 0.18 140 / 0.5)",
-            color: "oklch(0.85 0.15 140)",
+            background: adDisabled
+              ? "oklch(0.2 0.04 220 / 0.5)"
+              : "oklch(0.65 0.18 220 / 0.25)",
+            border: adDisabled
+              ? "1px solid oklch(0.3 0.05 220 / 0.3)"
+              : "1px solid oklch(0.65 0.18 220 / 0.5)",
+            color: adDisabled ? "oklch(0.45 0.05 220)" : "oklch(0.82 0.1 220)",
+            cursor: adDisabled ? "not-allowed" : "pointer",
           }}
         >
-          📤 Copy Invite Link
-        </Button>
-        <Button
-          data-ocid="shop.invite_reward.button"
-          onClick={handleClaimInviteReward}
-          className="w-full font-display font-700 h-10"
-          style={{
-            background:
-              "linear-gradient(135deg, oklch(0.55 0.18 140), oklch(0.6 0.2 150))",
-            color: "white",
-          }}
-        >
-          👥 Claim Invite Reward (+50 🪙)
-        </Button>
+          {adDisabled
+            ? adCooldown > 0
+              ? `⏳ Wait ${adCooldown}s`
+              : "Daily limit reached"
+            : "▶ Watch Ad for Coins"}
+        </motion.button>
       </motion.div>
 
       {/* Coin Packages */}
@@ -497,7 +458,7 @@ export default function Shop({
               className="font-display text-base font-800 mt-1"
               style={{ color: "oklch(0.88 0.18 90)" }}
             >
-              {pkg.coins.toLocaleString()} 🪙
+              {pkg.coins} 🪙
             </p>
             <Button
               data-ocid={`shop.package.button.${idx + 1}`}
@@ -518,6 +479,80 @@ export default function Shop({
           </motion.div>
         ))}
       </div>
+
+      {/* Custom Amount */}
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="rounded-2xl p-4 space-y-3"
+        style={{
+          background:
+            "linear-gradient(135deg, oklch(0.18 0.05 50), oklch(0.14 0.03 50))",
+          border: "1px solid oklch(0.55 0.15 50 / 0.4)",
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xl">✏️</span>
+          <div>
+            <h3 className="font-display text-base font-700 text-foreground">
+              Custom Amount
+            </h3>
+            <p className="text-xs" style={{ color: "oklch(0.65 0.1 50)" }}>
+              ₹1 = 1 coin (bonus for larger amounts)
+            </p>
+          </div>
+        </div>
+        <div className="relative">
+          <span
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold"
+            style={{ color: "oklch(0.75 0.15 80)" }}
+          >
+            ₹
+          </span>
+          <input
+            data-ocid="shop.custom_amount.input"
+            type="number"
+            min={10}
+            placeholder="Enter amount (min ₹10)"
+            value={customAmount}
+            onChange={(e) => setCustomAmount(e.target.value)}
+            className="w-full pl-7 pr-3 py-2.5 rounded-xl text-sm font-600 outline-none"
+            style={{
+              background: "oklch(0.2 0.05 50 / 0.6)",
+              border: "1px solid oklch(0.5 0.12 50 / 0.4)",
+              color: "oklch(0.9 0.04 80)",
+            }}
+          />
+        </div>
+        {customCoinsPreview !== null && (
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-sm font-700 text-center"
+            style={{ color: "oklch(0.85 0.18 90)" }}
+          >
+            You'll receive: {customCoinsPreview} 🪙
+          </motion.p>
+        )}
+        <Button
+          data-ocid="shop.custom_amount.submit_button"
+          onClick={handleBuyCustom}
+          disabled={!customAmount || Number.parseInt(customAmount) < 10}
+          className="w-full font-display font-700 h-11"
+          style={{
+            background:
+              !customAmount || Number.parseInt(customAmount) < 10
+                ? "oklch(0.25 0.04 50)"
+                : "linear-gradient(135deg, oklch(0.75 0.2 55), oklch(0.68 0.22 40))",
+            color:
+              !customAmount || Number.parseInt(customAmount) < 10
+                ? "oklch(0.5 0.06 50)"
+                : "oklch(0.12 0.02 50)",
+          }}
+        >
+          Buy Custom Pack
+        </Button>
+      </motion.div>
 
       {/* Legal Disclaimer */}
       <p className="text-center text-xs text-muted-foreground/60 mt-2 px-2">

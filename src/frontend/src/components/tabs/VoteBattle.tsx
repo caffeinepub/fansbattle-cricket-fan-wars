@@ -28,7 +28,6 @@ interface Poll {
   enabled: boolean;
 }
 
-// Seed polls use 0 votes — no fake/random numbers
 const DEFAULT_POLLS = [
   {
     question: "Best captain in world cricket right now?",
@@ -53,19 +52,20 @@ const DEFAULT_POLLS = [
   },
 ];
 
+const VOTE_COST = 2;
+
 interface Props {
   addCoins: (amount: number, type: string) => Promise<void>;
+  spendCoins: (amount: number, type: string) => Promise<boolean>;
 }
 
-export default function VoteBattle({ addCoins }: Props) {
+export default function VoteBattle({ spendCoins }: Props) {
   const { userId } = useUser();
   const [polls, setPolls] = useState<Poll[]>([]);
-  // voted: loaded from Firestore (not localStorage)
   const [voted, setVoted] = useState<Record<string, "A" | "B">>({});
   const [loadingVotes, setLoadingVotes] = useState(false);
   const seededRef = useRef(false);
 
-  // Subscribe to polls
   useEffect(() => {
     const unsub = onSnapshot(
       query(collection(db, "polls"), orderBy("createdAt", "desc")),
@@ -83,7 +83,6 @@ export default function VoteBattle({ addCoins }: Props) {
           .filter((p) => p.enabled);
         setPolls(data);
 
-        // Seed with 0 votes — no fake counts
         if (data.length === 0 && !seededRef.current) {
           seededRef.current = true;
           Promise.all(
@@ -103,7 +102,6 @@ export default function VoteBattle({ addCoins }: Props) {
     return unsub;
   }, []);
 
-  // Load user's votes from Firestore when polls are available
   // biome-ignore lint/correctness/useExhaustiveDependencies: polls.length is a proxy for poll list changes
   useEffect(() => {
     if (!userId || polls.length === 0) return;
@@ -122,29 +120,31 @@ export default function VoteBattle({ addCoins }: Props) {
       return;
     }
 
+    // Deduct 2 coins to vote
+    const ok = await spendCoins(VOTE_COST, "vote");
+    if (!ok) {
+      toast.error("Not enough coins to vote! You need 2 🪙");
+      return;
+    }
+
     // Optimistic UI update
     setVoted((prev) => ({ ...prev, [poll.id]: choice }));
 
     try {
-      // Check + store in Firestore (prevents duplicate votes)
       const stored = await storeVote(userId, poll.id, choice);
       if (!stored) {
         toast.error("Already voted on this poll!");
-        // Reload from Firestore to sync state
         const result = await getUserVotesForPolls(userId, [poll.id]);
         setVoted((prev) => ({ ...prev, ...result }));
         return;
       }
 
-      // Increment vote count
       await updateDoc(doc(db, "polls", poll.id), {
         [choice === "A" ? "votesA" : "votesB"]: increment(1),
       });
 
-      await addCoins(3, "vote_reward");
-      toast.success("+3 coins earned! 🪙", { duration: 2000 });
+      toast.success("Vote cast! 🗳️", { duration: 2000 });
     } catch {
-      // Revert optimistic update on error
       setVoted((prev) => {
         const next = { ...prev };
         delete next[poll.id];
@@ -175,7 +175,7 @@ export default function VoteBattle({ addCoins }: Props) {
             🏆 Vote Battle
           </h2>
           <p className="text-muted-foreground text-xs mt-0.5">
-            Vote &amp; earn 3 coins per poll
+            Vote on cricket topics — {VOTE_COST} coins per vote
           </p>
         </div>
         <Badge
@@ -189,7 +189,6 @@ export default function VoteBattle({ addCoins }: Props) {
         </Badge>
       </div>
 
-      {/* Loading votes from Firestore */}
       {loadingVotes && polls.length > 0 && (
         <div className="text-center py-3">
           <p className="text-xs" style={{ color: "oklch(0.55 0.05 255)" }}>
@@ -219,7 +218,7 @@ export default function VoteBattle({ addCoins }: Props) {
                   {poll.question}
                 </p>
                 <span
-                  className="text-[10px] px-2 py-0.5 rounded-full font-600"
+                  className="text-[10px] px-2 py-0.5 rounded-full font-600 shrink-0 ml-2"
                   style={{
                     background: "oklch(0.55 0.2 145 / 0.15)",
                     color: "oklch(0.7 0.18 145)",
@@ -245,75 +244,90 @@ export default function VoteBattle({ addCoins }: Props) {
                       className="relative overflow-hidden rounded-xl px-3 py-2.5 text-left transition-all"
                       style={{
                         background: isVoted
-                          ? "oklch(0.65 0.22 30 / 0.2)"
-                          : "oklch(0.2 0.03 255)",
+                          ? "oklch(0.65 0.2 145 / 0.25)"
+                          : hasVoted
+                            ? "oklch(0.18 0.03 250)"
+                            : "oklch(0.22 0.05 250 / 0.6)",
                         border: isVoted
-                          ? "1.5px solid oklch(0.72 0.18 50)"
-                          : "1.5px solid oklch(0.25 0.04 255)",
+                          ? "1px solid oklch(0.65 0.2 145 / 0.6)"
+                          : hasVoted
+                            ? "1px solid oklch(0.25 0.04 250)"
+                            : "1px solid oklch(0.35 0.07 250 / 0.5)",
+                        cursor: hasVoted ? "default" : "pointer",
                       }}
                     >
-                      <p className="font-600 text-foreground text-xs mb-1">
-                        {label}
-                      </p>
-                      <p
-                        className="font-display font-800 text-lg"
-                        style={{ color: "oklch(0.72 0.18 50)" }}
-                      >
-                        {hasVoted ? `${pct}%` : "Vote"}
-                      </p>
                       {hasVoted && (
                         <div
-                          className="absolute bottom-0 left-0 h-1"
+                          className="absolute inset-0 rounded-xl"
                           style={{
                             width: `${pct}%`,
-                            background: "oklch(0.72 0.18 50)",
-                            borderRadius: "0 0 4px 4px",
+                            background: isVoted
+                              ? "oklch(0.65 0.2 145 / 0.15)"
+                              : "oklch(0.55 0.08 250 / 0.08)",
+                            transition: "width 0.5s ease",
                           }}
                         />
                       )}
+                      <span className="relative z-10 block">
+                        <span className="text-xs font-700 text-foreground">
+                          {label}
+                        </span>
+                        {hasVoted && (
+                          <span
+                            className="block text-[10px] font-600 mt-0.5"
+                            style={{
+                              color: isVoted
+                                ? "oklch(0.72 0.18 145)"
+                                : "oklch(0.6 0.06 250)",
+                            }}
+                          >
+                            {pct}%
+                          </span>
+                        )}
+                      </span>
                     </motion.button>
                   );
                 })}
               </div>
 
-              {hasVoted && (
-                <div className="flex items-center justify-between">
-                  <p className="text-xs text-muted-foreground">
-                    {total.toLocaleString()} votes
-                  </p>
-                  <button
-                    type="button"
-                    data-ocid={`vote_battle.share.${idx + 1}`}
-                    onClick={() => handleShare(poll)}
-                    className="flex items-center gap-1 text-xs px-3 py-1 rounded-full"
-                    style={{
-                      background: "oklch(0.35 0.1 140 / 0.3)",
-                      color: "oklch(0.7 0.16 140)",
-                    }}
-                  >
-                    <Share2 className="h-3 w-3" />
-                    Share on WhatsApp
-                  </button>
-                </div>
-              )}
-
-              {!hasVoted && (
-                <p
-                  className="text-xs text-center"
-                  style={{ color: "oklch(0.72 0.18 50)" }}
+              <div className="flex items-center justify-between">
+                <span
+                  className="text-[10px] font-600"
+                  style={{ color: "oklch(0.55 0.06 250)" }}
                 >
-                  Vote &amp; Earn 3 🪙
-                </p>
-              )}
+                  {hasVoted
+                    ? `${poll.votesA + poll.votesB} total votes`
+                    : `Vote — ${VOTE_COST} 🪙`}
+                </span>
+                {hasVoted && (
+                  <motion.button
+                    type="button"
+                    data-ocid={`vote_battle.poll.share.${idx + 1}`}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => handleShare(poll)}
+                    className="flex items-center gap-1 text-[10px] font-700 px-2 py-1 rounded-lg transition-colors"
+                    style={{
+                      background: "oklch(0.22 0.12 145 / 0.3)",
+                      color: "oklch(0.72 0.18 145)",
+                      border: "1px solid oklch(0.55 0.15 145 / 0.3)",
+                    }}
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                  >
+                    <Share2 className="w-3 h-3" />
+                    Share
+                  </motion.button>
+                )}
+              </div>
             </motion.div>
           );
         })}
       </AnimatePresence>
 
-      {polls.length === 0 && (
-        <div className="text-center py-16" data-ocid="vote_battle.empty_state">
-          <div className="text-4xl mb-3">📊</div>
-          <p className="text-muted-foreground">No polls available</p>
+      {polls.length === 0 && !loadingVotes && (
+        <div className="text-center py-12">
+          <p className="text-4xl mb-3">🗳️</p>
+          <p className="text-muted-foreground text-sm">Loading polls...</p>
         </div>
       )}
     </div>

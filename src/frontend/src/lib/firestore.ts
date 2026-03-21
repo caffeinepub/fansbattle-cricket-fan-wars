@@ -33,6 +33,10 @@ export interface UserData {
 const USER_ID_KEY = "fansbattle_user_id";
 const LEGACY_KEY = "fansbattle_device_id";
 
+// ─── Initial coin value ───────────────────────────────────────────────────────
+// New users start with 10 coins only. This ensures they must spend to play.
+export const INITIAL_COINS = 10;
+
 export function getOrCreateUserId(): string {
   const legacy = localStorage.getItem(LEGACY_KEY);
   if (legacy) {
@@ -56,7 +60,7 @@ export function createFallbackUser(userId: string): UserData {
     uid: userId,
     deviceId: userId,
     username: `Fan${randomSuffix}`,
-    coins: 100,
+    coins: INITIAL_COINS,
     wins: 0,
     level: 1,
     role: "user",
@@ -80,7 +84,7 @@ export async function createOrGetUserByDeviceId(
   const newUser: Omit<UserData, "uid"> = {
     deviceId: userId,
     username: `Fan${randomSuffix}`,
-    coins: 100,
+    coins: INITIAL_COINS,
     wins: 0,
     level: 1,
     role: "user",
@@ -161,6 +165,10 @@ export async function getTransactions(userId: string): Promise<
   }));
 }
 
+// ─── Daily Reward ─────────────────────────────────────────────────────────────
+// Max 5 coins per day. Controlled to limit inflation.
+export const DAILY_REWARD_AMOUNT = 5;
+
 export async function claimDailyReward(
   userId: string,
 ): Promise<{ success: boolean; alreadyClaimed: boolean }> {
@@ -171,7 +179,6 @@ export async function claimDailyReward(
     const snap = await getDoc(userRef);
 
     if (!snap.exists()) {
-      // Auto-create user then claim
       await createOrGetUserByDeviceId(userId);
       return claimDailyReward(userId);
     }
@@ -182,14 +189,14 @@ export async function claimDailyReward(
     }
 
     await updateDoc(userRef, {
-      coins: increment(20),
+      coins: increment(DAILY_REWARD_AMOUNT),
       lastClaimDate: today,
     });
 
     await addDoc(collection(db, "transactions"), {
       userId,
       type: "daily_reward",
-      amount: 20,
+      amount: DAILY_REWARD_AMOUNT,
       roomId: null,
       timestamp: serverTimestamp(),
     });
@@ -211,10 +218,6 @@ export interface GuessRecord {
   timestamp: unknown;
 }
 
-/**
- * Returns the guess record if the user has already guessed for this
- * (matchId + questionId) combo, or null if not.
- */
 export async function getUserGuess(
   userId: string,
   matchId: string,
@@ -233,9 +236,6 @@ export async function getUserGuess(
   return { id: d.id, ...(d.data() as Omit<GuessRecord, "id">) };
 }
 
-/**
- * Stores a guess in Firestore. Caller must deduct coins before calling.
- */
 export async function storeGuess(
   userId: string,
   matchId: string,
@@ -253,9 +253,6 @@ export async function storeGuess(
 
 // ─── Vote System ─────────────────────────────────────────────────────────────
 
-/**
- * Returns the side ("A" | "B") the user voted for on this poll, or null.
- */
 export async function getUserVote(
   userId: string,
   pollId: string,
@@ -271,9 +268,6 @@ export async function getUserVote(
   return (snap.docs[0].data() as { side: "A" | "B" }).side;
 }
 
-/**
- * Stores a vote in Firestore. Returns false if already voted.
- */
 export async function storeVote(
   userId: string,
   pollId: string,
@@ -290,16 +284,11 @@ export async function storeVote(
   return true;
 }
 
-/**
- * Loads all votes for a user for a list of poll IDs.
- * Returns a map of { pollId: "A" | "B" }.
- */
 export async function getUserVotesForPolls(
   userId: string,
   pollIds: string[],
 ): Promise<Record<string, "A" | "B">> {
   if (pollIds.length === 0) return {};
-  // Firestore "in" limit is 30 per query
   const chunks: string[][] = [];
   for (let i = 0; i < pollIds.length; i += 30) {
     chunks.push(pollIds.slice(i, i + 30));

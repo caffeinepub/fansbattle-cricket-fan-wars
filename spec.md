@@ -1,33 +1,44 @@
 # FansBattle – Cricket Fan Wars
 
 ## Current State
-The LiveMatch tab has a basic guess system with 3 events, 5-coin cost per guess, and always pays out rewards immediately (no correct/wrong logic). There is no timer on guess cards. Questions don't match the intended event types.
+
+FansBattle is a cricket fan engagement app with Firebase/Firestore backend, device-based auto-login, live cricket data via CricAPI, and a coin economy. Current economy values are overly generous (100 starting coins, +20 daily reward, +3 per vote, guaranteed rewards). The system allows most users to gain more coins than they spend, which is not sustainable.
 
 ## Requested Changes (Diff)
 
 ### Add
-- Timer displayed on each guess card (countdown showing time remaining to guess)
-- Correct/Wrong guess resolution: each guess card shows a result after the timer expires (random simulation for demo)
-- Correct guess rewards 25 coins; wrong guess loses the 10 coins spent
-- New guess types: Who will win the match, Next wicket, Next six, Over runs above 10
-- Result states on cards: pending (timer running), correct (green, +25), wrong (red, -10)
-- "Expires in" countdown badge per card
+- Pool system: every guess/vote/room entry fee is pooled; only 70–80% distributed to winners
+- Ad cooldown (2–5 min) and daily cap on ad rewards
+- Low-balance purchase prompt when user has <10 coins
+- Anti-abuse: one entry per user per question (already partially done)
+- Custom coin purchase input (min ₹10) with dynamic coin calculation
 
 ### Modify
-- Entry cost changed from 5 to 10 coins per guess
-- Guess cards updated to show cost (10), potential reward (25), and a live timer
-- After guessing, card shows awaiting result state with countdown
-- On timer expiry, simulate result (correct or wrong) and apply coin change
-- EVENTS list updated with the four specified guess types plus extras
+- Initial coins: 100 → **10**
+- Daily reward: 20 → **5 coins max**
+- Ad reward: 20 → **2–5 coins** (random), with 2-min cooldown and daily cap of 3 ads
+- Vote: **costs 2 coins** (no guaranteed reward; removed +3 per vote)
+- Guess: costs 10 coins (unchanged), but winner logic now distributes only 70–80% of pool
+- Room win reward: now computed as 75% of pool (25% commission); not a fixed 70 coins
+- Coin packages: ₹10→10, ₹50→55, ₹100→120 (was 100/600/1500)
+- DailyRewardModal: show 5 coins
+- Spin wheel: removed (was guaranteed win which is inflationary)
+- Invite reward: removed (was free +50 coins with no cost)
+- VoteBattle header: update copy to reflect cost ("Vote costs 2 coins")
 
 ### Remove
-- Immediate reward payout on guess lock (replaced by timer-based result)
+- Spin wheel game (always gave coins, inflating the economy)
+- Invite reward button (free +50 coins, no verification)
+- Per-vote coin reward (+3 per vote)
+- Guaranteed "everyone wins" logic in FriendsRoom
 
 ## Implementation Plan
-1. Define EVENTS with 4 new guess types: Who will win, Next wicket, Next six, Over runs above 10 — each with options, emoji, timers (30–90 seconds)
-2. Add per-card countdown timer using useEffect + setInterval
-3. Track guess state per card: idle → selected → locked → resolved(correct|wrong)
-4. On lock: deduct 10 coins, start timer
-5. On timer expiry: simulate result, if correct addCoins(25), show toast
-6. Card UI: show timer badge, locked state with countdown, result state (correct/wrong)
-7. Cost = 10 coins, reward = 25 coins constants
+
+1. **firestore.ts**: Change `createOrGetUserByDeviceId` initial coins to 10. Change `claimDailyReward` to award 5 coins. Add `adCooldown` / `adDailyCount` tracking.
+2. **UserContext.tsx**: Change `createFallbackUser` coins to 10.
+3. **App.tsx**: Update `DAILY_REWARD_COINS` to 5. Ad reward = random 2–5 coins with cooldown tracking (localStorage `lastAdTime`, `adCountToday`). Show low-balance prompt.
+4. **DailyRewardModal.tsx**: Update day card values to show 5 coins max.
+5. **Shop.tsx**: New packages (₹10=10, ₹50=55, ₹100=120). Remove spin wheel. Remove invite reward button. Ad button shows 2-5 coins, shows cooldown timer. Add custom amount input. Daily claim shows 5 coins.
+6. **VoteBattle.tsx**: `handleVote` now calls `spendCoins(2, 'vote')` before voting. Remove `addCoins(3, 'vote_reward')`. Update UI copy.
+7. **FriendsRoom.tsx**: Win reward = `Math.floor(totalPool * 0.75)`. Commission = 25% of pool. Update UI to show pool and commission clearly.
+8. **LiveMatch / GuessSystem**: Ensure guess pool logic: winner only if ranked top — for single-player guess, use 70% payout rule (entry 10 coins, win = 7 coins if correct — no guaranteed win).
