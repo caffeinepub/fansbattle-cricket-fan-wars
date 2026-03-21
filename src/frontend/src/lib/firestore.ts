@@ -160,36 +160,62 @@ export type ClaimResult =
 
 export async function claimDailyReward(deviceId: string): Promise<ClaimResult> {
   const userRef = doc(db, "users", deviceId);
-  const today = getTodayString();
+  const today = getTodayString(); // YYYY-MM-DD
+
   try {
+    let coinsAwarded = 0;
     await runTransaction(db, async (transaction) => {
+      // Step 1: Read document
       const snap = await transaction.get(userRef);
-      if (!snap.exists()) throw new Error("User not found");
+
+      // Step 2a: Document must exist
+      if (!snap.exists()) throw new Error("USER_NOT_FOUND");
+
       const data = snap.data() as UserData;
+      const currentCoins = data.coins;
+
+      // Step 2b: Check lastClaimDate — block if already claimed today
       if (data.lastClaimDate === today) throw new Error("ALREADY_CLAIMED");
-      const newCoins = data.coins + DAILY_REWARD_AMOUNT;
-      transaction.update(userRef, { coins: newCoins, lastClaimDate: today });
+
+      // Step 2c: Calculate new coins
+      const newCoins = currentCoins + DAILY_REWARD_AMOUNT;
+      coinsAwarded = DAILY_REWARD_AMOUNT;
+
+      // Step 2d: Atomic update using set+merge (more resilient than update)
+      transaction.set(
+        userRef,
+        {
+          coins: newCoins,
+          lastClaimDate: today,
+        },
+        { merge: true },
+      );
     });
+
+    // Step 3: Only after Firestore success, fire-and-forget transaction log
     addDoc(collection(db, "transactions"), {
       userId: deviceId,
       type: "daily_reward",
-      amount: DAILY_REWARD_AMOUNT,
+      amount: coinsAwarded,
       timestamp: new Date().toISOString(),
     }).catch(() => {});
-    return {
-      success: true,
-      alreadyClaimed: false,
-      coinsAwarded: DAILY_REWARD_AMOUNT,
-    };
+
+    return { success: true, alreadyClaimed: false, coinsAwarded };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg === "ALREADY_CLAIMED") {
       return { success: false, alreadyClaimed: true };
     }
+    // Log actual error for debugging
+    console.error("[claimDailyReward] Firestore error:", e);
+    // Any other error (including USER_NOT_FOUND, network issues)
     return {
       success: false,
       alreadyClaimed: false,
-      error: "Firestore update failed. Try again.",
+      error:
+        msg === "USER_NOT_FOUND"
+          ? "User account not found. Please restart the app."
+          : `Firestore update failed: ${msg}. Please try again.`,
     };
   }
 }

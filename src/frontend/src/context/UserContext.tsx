@@ -1,4 +1,5 @@
 import {
+  DAILY_REWARD_AMOUNT,
   INITIAL_COINS,
   claimDailyReward,
   createFallbackUser,
@@ -135,7 +136,40 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
         error: "Not initialized",
       };
     }
-    return claimDailyReward(deviceId);
+
+    // Try Firestore first
+    const result = await claimDailyReward(deviceId);
+
+    // If Firestore fails (not already claimed), fall back to localStorage
+    if (!result.success && !result.alreadyClaimed) {
+      const today = new Date().toISOString().slice(0, 10);
+      const localKey = `fansbattle_last_claim_${deviceId}`;
+      const lastClaim = localStorage.getItem(localKey);
+
+      if (lastClaim === today) {
+        return { success: false, alreadyClaimed: true };
+      }
+
+      // Award locally and update UI optimistically
+      localStorage.setItem(localKey, today);
+      setUserData((prev) =>
+        prev
+          ? {
+              ...prev,
+              coins: prev.coins + DAILY_REWARD_AMOUNT,
+              lastClaimDate: today,
+            }
+          : prev,
+      );
+
+      return {
+        success: true,
+        alreadyClaimed: false,
+        coinsAwarded: DAILY_REWARD_AMOUNT,
+      };
+    }
+
+    return result;
   }, [deviceId]);
 
   const logout = useCallback(() => {
