@@ -1,44 +1,46 @@
 # FansBattle – Cricket Fan Wars
 
 ## Current State
-
-FansBattle is a cricket fan engagement app with Firebase/Firestore backend, device-based auto-login, live cricket data via CricAPI, and a coin economy. Current economy values are overly generous (100 starting coins, +20 daily reward, +3 per vote, guaranteed rewards). The system allows most users to gain more coins than they spend, which is not sustainable.
+- Bottom nav has 5+ tabs: Live Match, Vote Battle, Stickers, Friends, Shop
+- Header has logout button + coin balance
+- Firestore may use random document IDs instead of deviceId as doc ID
+- Daily reward uses localStorage for claim tracking instead of pure Firestore transactions
+- Multiple unused tabs clutter the UI
 
 ## Requested Changes (Diff)
 
 ### Add
-- Pool system: every guess/vote/room entry fee is pooled; only 70–80% distributed to winners
-- Ad cooldown (2–5 min) and daily cap on ad rewards
-- Low-balance purchase prompt when user has <10 coins
-- Anti-abuse: one entry per user per question (already partially done)
-- Custom coin purchase input (min ₹10) with dynamic coin calculation
+- Profile tab (bottom nav, second tab) with: username, coins balance, user ID, Shop section, Logout button
+- Home tab with two sections: "Live Matches" and "Upcoming Matches"
+- Auto-refresh every 15 seconds for match data
+- Clicking a match opens a detail/guess panel
+- Coin balance in header is clickable → opens shop modal
+- Shop accessible from Profile screen and by tapping coin balance in header
 
 ### Modify
-- Initial coins: 100 → **10**
-- Daily reward: 20 → **5 coins max**
-- Ad reward: 20 → **2–5 coins** (random), with 2-min cooldown and daily cap of 3 ads
-- Vote: **costs 2 coins** (no guaranteed reward; removed +3 per vote)
-- Guess: costs 10 coins (unchanged), but winner logic now distributes only 70–80% of pool
-- Room win reward: now computed as 75% of pool (25% commission); not a fixed 70 coins
-- Coin packages: ₹10→10, ₹50→55, ₹100→120 (was 100/600/1500)
-- DailyRewardModal: show 5 coins
-- Spin wheel: removed (was guaranteed win which is inflationary)
-- Invite reward: removed (was free +50 coins with no cost)
-- VoteBattle header: update copy to reflect cost ("Vote costs 2 coins")
+- Bottom nav: reduce to 2 tabs only — Home and Profile
+- Header: remove logout button, keep only coin balance (clickable)
+- Home tab (renamed from "Live Match"): show live matches + upcoming matches from CricAPI
+- Firestore user document: use `users/{deviceId}` (deviceId as doc ID, not random)
+- On app start: check if `users/{deviceId}` exists; if not, create with coins:10, lastClaimDate:""
+- All coin updates: use Firestore runTransaction (never direct overwrite)
+- Daily reward: compare today's date (YYYY-MM-DD) with lastClaimDate from Firestore; add +5 coins via transaction; update lastClaimDate after success; block if already claimed
+- UI only updates after Firestore success; show error if Firestore fails
 
 ### Remove
-- Spin wheel game (always gave coins, inflating the economy)
-- Invite reward button (free +50 coins, no verification)
-- Per-vote coin reward (+3 per vote)
-- Guaranteed "everyone wins" logic in FriendsRoom
+- Vote Battle tab
+- Stickers tab
+- Friends tab
+- Shop from bottom navigation (move to Profile + header coin tap)
+- Logout from header
+- All dummy/hardcoded UI elements and fake data
 
 ## Implementation Plan
-
-1. **firestore.ts**: Change `createOrGetUserByDeviceId` initial coins to 10. Change `claimDailyReward` to award 5 coins. Add `adCooldown` / `adDailyCount` tracking.
-2. **UserContext.tsx**: Change `createFallbackUser` coins to 10.
-3. **App.tsx**: Update `DAILY_REWARD_COINS` to 5. Ad reward = random 2–5 coins with cooldown tracking (localStorage `lastAdTime`, `adCountToday`). Show low-balance prompt.
-4. **DailyRewardModal.tsx**: Update day card values to show 5 coins max.
-5. **Shop.tsx**: New packages (₹10=10, ₹50=55, ₹100=120). Remove spin wheel. Remove invite reward button. Ad button shows 2-5 coins, shows cooldown timer. Add custom amount input. Daily claim shows 5 coins.
-6. **VoteBattle.tsx**: `handleVote` now calls `spendCoins(2, 'vote')` before voting. Remove `addCoins(3, 'vote_reward')`. Update UI copy.
-7. **FriendsRoom.tsx**: Win reward = `Math.floor(totalPool * 0.75)`. Commission = 25% of pool. Update UI to show pool and commission clearly.
-8. **LiveMatch / GuessSystem**: Ensure guess pool logic: winner only if ranked top — for single-player guess, use 70% payout rule (entry 10 coins, win = 7 coins if correct — no guaranteed win).
+1. Rewrite `lib/firestore.ts`: ensure user doc uses deviceId as Firestore document ID; fix `claimDailyReward` to use `runTransaction` with date comparison; fix all coin updates to use transactions
+2. Rewrite `context/UserContext.tsx`: ensure `createOrGetUser` writes to `users/{deviceId}`; subscribe to `users/{deviceId}` via onSnapshot
+3. Rewrite `components/BottomNav.tsx`: 2 tabs only — Home, Profile
+4. Rewrite `components/Header.tsx`: remove logout, coin balance clickable to open shop
+5. Rewrite `components/tabs/LiveMatch.tsx` → rename logic to Home tab: two sections (Live Matches, Upcoming Matches) with auto-refresh; each match clickable
+6. Create `components/tabs/Profile.tsx`: username, coins, user ID, shop section (inline or modal), logout button
+7. Rewrite `App.tsx`: remove all unused tabs/modals, wire up 2-tab navigation, pass shop open handler via coin tap in header
+8. Delete or ignore: VoteBattle, StickerCreator, FriendsRoom components (no longer rendered)

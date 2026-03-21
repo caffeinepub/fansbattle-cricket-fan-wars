@@ -1,213 +1,230 @@
+import { getApps, initializeApp } from "firebase/app";
 import {
   addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
-  increment,
+  getFirestore,
   limit,
+  onSnapshot,
   orderBy,
   query,
-  serverTimestamp,
+  runTransaction,
   setDoc,
-  updateDoc,
   where,
 } from "firebase/firestore";
-import { db } from "./firebase";
 
-export interface UserData {
-  uid: string;
-  deviceId: string;
-  username: string;
-  coins: number;
-  wins: number;
-  level: number;
-  role: "user" | "admin";
-  favoriteTeam: string;
-  avatar: string;
-  createdAt: unknown;
-  usernameChanged: boolean;
-  lastClaimDate: string | null;
-}
+const firebaseConfig = {
+  apiKey: "AIzaSyAAti3AU0bFGVatgIHSAF8y2Q642LoWb2Q",
+  authDomain: "project-bc4b53b0-b928-4234-837.firebaseapp.com",
+  projectId: "project-bc4b53b0-b928-4234-837",
+  storageBucket: "project-bc4b53b0-b928-4234-837.firebasestorage.app",
+  messagingSenderId: "484551243974",
+  appId: "1:484551243974:web:3d0029fc852a7d73f57fc7",
+};
 
-const USER_ID_KEY = "fansbattle_user_id";
-const LEGACY_KEY = "fansbattle_device_id";
+const app =
+  getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+export const db = getFirestore(app);
 
-// ─── Initial coin value ───────────────────────────────────────────────────────
-// New users start with 10 coins only. This ensures they must spend to play.
+export const DAILY_REWARD_AMOUNT = 5;
 export const INITIAL_COINS = 10;
 
-export function getOrCreateUserId(): string {
+export interface UserData {
+  username: string;
+  coins: number;
+  deviceId: string;
+  createdAt: string;
+  role: string;
+  lastClaimDate: string;
+}
+
+function getTodayString(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+const DEVICE_ID_KEY = "fansbattle_device_id";
+const LEGACY_KEY = "fansbattle_user_id";
+
+export function getOrCreateDeviceId(): string {
   const legacy = localStorage.getItem(LEGACY_KEY);
   if (legacy) {
-    localStorage.setItem(USER_ID_KEY, legacy);
+    localStorage.setItem(DEVICE_ID_KEY, legacy);
     localStorage.removeItem(LEGACY_KEY);
     return legacy;
   }
-  let userId = localStorage.getItem(USER_ID_KEY);
-  if (!userId) {
-    userId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-    localStorage.setItem(USER_ID_KEY, userId);
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem(DEVICE_ID_KEY, id);
   }
-  return userId;
+  return id;
 }
 
-export const getOrCreateDeviceId = getOrCreateUserId;
+/** @deprecated Use getOrCreateDeviceId */
+export const getOrCreateUserId = getOrCreateDeviceId;
 
-export function createFallbackUser(userId: string): UserData {
-  const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-  return {
-    uid: userId,
-    deviceId: userId,
-    username: `Fan${randomSuffix}`,
-    coins: INITIAL_COINS,
-    wins: 0,
-    level: 1,
-    role: "user",
-    favoriteTeam: "",
-    avatar: "",
-    createdAt: new Date().toISOString(),
-    usernameChanged: false,
-    lastClaimDate: null,
-  };
-}
-
-export async function createOrGetUserByDeviceId(
-  userId: string,
-): Promise<UserData> {
-  const userRef = doc(db, "users", userId);
+export async function createOrGetUser(deviceId: string): Promise<UserData> {
+  const userRef = doc(db, "users", deviceId);
   const snap = await getDoc(userRef);
   if (snap.exists()) {
-    return { uid: userId, ...(snap.data() as Omit<UserData, "uid">) };
+    return snap.data() as UserData;
   }
-  const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-  const newUser: Omit<UserData, "uid"> = {
-    deviceId: userId,
-    username: `Fan${randomSuffix}`,
+  const suffix = Math.floor(1000 + Math.random() * 9000);
+  const newUser: UserData = {
+    username: `Fan${suffix}`,
     coins: INITIAL_COINS,
-    wins: 0,
-    level: 1,
+    deviceId,
+    createdAt: new Date().toISOString(),
     role: "user",
-    favoriteTeam: "",
-    avatar: "",
-    createdAt: serverTimestamp(),
-    usernameChanged: false,
-    lastClaimDate: null,
+    lastClaimDate: "",
   };
   await setDoc(userRef, newUser);
-  return { uid: userId, ...newUser };
+  return newUser;
 }
 
-export function getUserRef(uid: string) {
-  return doc(db, "users", uid);
+/** @deprecated Use createOrGetUser */
+export const createOrGetUserByDeviceId = createOrGetUser;
+
+export function getUserRef(deviceId: string) {
+  return doc(db, "users", deviceId);
 }
 
-export async function updateCoins(uid: string, delta: number): Promise<void> {
-  await updateDoc(doc(db, "users", uid), { coins: increment(delta) });
+export function createFallbackUser(deviceId: string): UserData {
+  const suffix = Math.floor(1000 + Math.random() * 9000);
+  return {
+    username: `Fan${suffix}`,
+    coins: INITIAL_COINS,
+    deviceId,
+    createdAt: new Date().toISOString(),
+    role: "user",
+    lastClaimDate: "",
+  };
 }
 
+export function subscribeToUser(
+  deviceId: string,
+  callback: (data: UserData | null) => void,
+) {
+  const userRef = doc(db, "users", deviceId);
+  return onSnapshot(userRef, (snap) => {
+    if (snap.exists()) {
+      callback(snap.data() as UserData);
+    } else {
+      callback(null);
+    }
+  });
+}
+
+export async function updateCoins(
+  deviceId: string,
+  delta: number,
+  type: string,
+): Promise<void> {
+  const userRef = doc(db, "users", deviceId);
+  const txId = `${deviceId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const txRef = doc(db, "transactions", txId);
+  await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(userRef);
+    if (!snap.exists()) throw new Error("User not found");
+    const current = (snap.data() as UserData).coins;
+    transaction.update(userRef, { coins: current + delta });
+    transaction.set(txRef, {
+      userId: deviceId,
+      type,
+      amount: delta,
+      timestamp: new Date().toISOString(),
+    });
+  });
+}
+
+/** @deprecated Use updateCoins */
 export async function logTransaction(
   userId: string,
   type: string,
   amount: number,
-  roomId?: string,
 ): Promise<void> {
   await addDoc(collection(db, "transactions"), {
     userId,
     type,
     amount,
-    roomId: roomId || null,
-    timestamp: serverTimestamp(),
+    timestamp: new Date().toISOString(),
   });
 }
 
-export async function updateUsername(
-  uid: string,
-  username: string,
-): Promise<void> {
-  await updateDoc(doc(db, "users", uid), {
-    username,
-    usernameChanged: true,
-  });
-}
+export type ClaimResult =
+  | { success: true; alreadyClaimed: false; coinsAwarded: number }
+  | { success: false; alreadyClaimed: true }
+  | { success: false; alreadyClaimed: false; error: string };
 
-export async function updateUserProfile(
-  uid: string,
-  data: { favoriteTeam?: string; avatar?: string },
-): Promise<void> {
-  await updateDoc(doc(db, "users", uid), data);
-}
-
-export async function getTransactions(userId: string): Promise<
-  Array<{
-    id: string;
-    type: string;
-    amount: number;
-    timestamp: unknown;
-    roomId?: string | null;
-  }>
-> {
-  const q = query(
-    collection(db, "transactions"),
-    where("userId", "==", userId),
-    orderBy("timestamp", "desc"),
-    limit(50),
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => ({
-    id: d.id,
-    ...(d.data() as {
-      type: string;
-      amount: number;
-      timestamp: unknown;
-      roomId?: string | null;
-    }),
-  }));
-}
-
-// ─── Daily Reward ─────────────────────────────────────────────────────────────
-// Max 5 coins per day. Controlled to limit inflation.
-export const DAILY_REWARD_AMOUNT = 5;
-
-export async function claimDailyReward(
-  userId: string,
-): Promise<{ success: boolean; alreadyClaimed: boolean }> {
-  const today = new Date().toISOString().slice(0, 10);
-  const userRef = doc(db, "users", userId);
-
+export async function claimDailyReward(deviceId: string): Promise<ClaimResult> {
+  const userRef = doc(db, "users", deviceId);
+  const today = getTodayString();
   try {
-    const snap = await getDoc(userRef);
-
-    if (!snap.exists()) {
-      await createOrGetUserByDeviceId(userId);
-      return claimDailyReward(userId);
-    }
-
-    const data = snap.data() as Omit<UserData, "uid">;
-    if (data.lastClaimDate === today) {
-      return { success: false, alreadyClaimed: true };
-    }
-
-    await updateDoc(userRef, {
-      coins: increment(DAILY_REWARD_AMOUNT),
-      lastClaimDate: today,
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(userRef);
+      if (!snap.exists()) throw new Error("User not found");
+      const data = snap.data() as UserData;
+      if (data.lastClaimDate === today) throw new Error("ALREADY_CLAIMED");
+      const newCoins = data.coins + DAILY_REWARD_AMOUNT;
+      transaction.update(userRef, { coins: newCoins, lastClaimDate: today });
     });
-
-    await addDoc(collection(db, "transactions"), {
-      userId,
+    addDoc(collection(db, "transactions"), {
+      userId: deviceId,
       type: "daily_reward",
       amount: DAILY_REWARD_AMOUNT,
-      roomId: null,
-      timestamp: serverTimestamp(),
-    });
-
-    return { success: true, alreadyClaimed: false };
-  } catch {
-    return { success: false, alreadyClaimed: false };
+      timestamp: new Date().toISOString(),
+    }).catch(() => {});
+    return {
+      success: true,
+      alreadyClaimed: false,
+      coinsAwarded: DAILY_REWARD_AMOUNT,
+    };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg === "ALREADY_CLAIMED") {
+      return { success: false, alreadyClaimed: true };
+    }
+    return {
+      success: false,
+      alreadyClaimed: false,
+      error: "Firestore update failed. Try again.",
+    };
   }
 }
 
-// ─── Guess System ────────────────────────────────────────────────────────────
+export async function submitGuess(
+  deviceId: string,
+  matchId: string,
+  guess: string,
+): Promise<{ success: boolean; error?: string }> {
+  const guessId = `${deviceId}_${matchId}`;
+  const guessRef = doc(db, "guesses", guessId);
+  const userRef = doc(db, "users", deviceId);
+  try {
+    await runTransaction(db, async (transaction) => {
+      const [guessSnap, userSnap] = await Promise.all([
+        transaction.get(guessRef),
+        transaction.get(userRef),
+      ]);
+      if (guessSnap.exists()) throw new Error("already_guessed");
+      const userData = userSnap.data() as UserData;
+      if (userData.coins < 10) throw new Error("insufficient_coins");
+      transaction.update(userRef, { coins: userData.coins - 10 });
+      transaction.set(guessRef, {
+        userId: deviceId,
+        matchId,
+        guess,
+        timestamp: new Date().toISOString(),
+      });
+    });
+    return { success: true };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { success: false, error: msg };
+  }
+}
 
 export interface GuessRecord {
   id: string;
@@ -247,11 +264,9 @@ export async function storeGuess(
     matchId,
     questionId,
     choice,
-    timestamp: serverTimestamp(),
+    timestamp: new Date().toISOString(),
   });
 }
-
-// ─── Vote System ─────────────────────────────────────────────────────────────
 
 export async function getUserVote(
   userId: string,
@@ -279,7 +294,7 @@ export async function storeVote(
     userId,
     pollId,
     side,
-    timestamp: serverTimestamp(),
+    timestamp: new Date().toISOString(),
   });
   return true;
 }
@@ -309,4 +324,33 @@ export async function getUserVotesForPolls(
     }),
   );
   return result;
+}
+
+export async function updateUserProfile(
+  uid: string,
+  data: { favoriteTeam?: string; avatar?: string },
+): Promise<void> {
+  const { updateDoc } = await import("firebase/firestore");
+  await updateDoc(doc(db, "users", uid), data);
+}
+
+export async function getTransactions(userId: string): Promise<
+  Array<{
+    id: string;
+    type: string;
+    amount: number;
+    timestamp: unknown;
+  }>
+> {
+  const q = query(
+    collection(db, "transactions"),
+    where("userId", "==", userId),
+    orderBy("timestamp", "desc"),
+    limit(50),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({
+    id: d.id,
+    ...(d.data() as { type: string; amount: number; timestamp: unknown }),
+  }));
 }
