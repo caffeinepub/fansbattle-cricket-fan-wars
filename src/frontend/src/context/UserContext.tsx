@@ -63,7 +63,6 @@ export function UserContextProvider({ children }: { children: ReactNode }) {
 
   // On mount: check localStorage for saved userId, load or create user.
   // Falls back to a local user if Firestore takes more than 3 seconds.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional mount-only effect
   useEffect(() => {
     if (initDone.current) return;
     initDone.current = true;

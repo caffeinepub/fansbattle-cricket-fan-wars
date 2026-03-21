@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, Coins, Flame, Lock, Star } from "lucide-react";
+import { CheckCircle2, Coins, Flame, Lock, Star, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 
 const REWARD_DAYS = [
@@ -14,12 +14,16 @@ interface DailyRewardModalProps {
   streakDay: number;
   coinsToEarn: number;
   onClaim: () => void;
+  alreadyClaimed?: boolean;
+  onClose?: () => void;
 }
 
 export default function DailyRewardModal({
   streakDay,
   coinsToEarn,
   onClaim,
+  alreadyClaimed,
+  onClose,
 }: DailyRewardModalProps) {
   return (
     <AnimatePresence>
@@ -58,6 +62,23 @@ export default function DailyRewardModal({
           />
 
           <div className="p-6">
+            {/* Close button */}
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                data-ocid="daily_reward.close_button"
+                className="absolute top-4 right-4 w-7 h-7 rounded-full flex items-center justify-center transition-colors"
+                style={{
+                  background: "oklch(0.25 0.04 250)",
+                  border: "1px solid oklch(0.35 0.06 250)",
+                  color: "oklch(0.6 0.06 250)",
+                }}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+
             {/* Title */}
             <div className="text-center mb-6">
               <div className="flex items-center justify-center gap-2 mb-2">
@@ -230,24 +251,48 @@ export default function DailyRewardModal({
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.45 }}
             >
-              <Button
-                onClick={onClaim}
-                className="w-full h-14 text-lg font-bold tracking-wide rounded-xl relative overflow-hidden"
-                style={{
-                  background:
-                    "linear-gradient(135deg, oklch(0.72 0.22 50), oklch(0.65 0.25 40))",
-                  color: "oklch(0.12 0.02 50)",
-                  boxShadow:
-                    "0 4px 20px oklch(0.7 0.22 50 / 0.5), inset 0 1px 0 oklch(0.88 0.15 65 / 0.4)",
-                  border: "none",
-                }}
-                data-ocid="daily_reward.claim_button"
-              >
-                <span className="relative z-10 flex items-center justify-center gap-2">
-                  <Flame className="w-5 h-5" />
-                  Claim Reward
-                </span>
-              </Button>
+              {alreadyClaimed ? (
+                <div className="text-center">
+                  <Button
+                    disabled
+                    className="w-full h-14 text-lg font-bold tracking-wide rounded-xl"
+                    style={{
+                      background: "oklch(0.22 0.04 250)",
+                      color: "oklch(0.55 0.06 250)",
+                      border: "1px solid oklch(0.3 0.04 250)",
+                      cursor: "not-allowed",
+                    }}
+                    data-ocid="daily_reward.already_claimed"
+                  >
+                    ✓ Already Claimed Today
+                  </Button>
+                  <p
+                    className="text-xs mt-2"
+                    style={{ color: "oklch(0.5 0.06 250)" }}
+                  >
+                    Come back tomorrow for your next reward!
+                  </p>
+                </div>
+              ) : (
+                <Button
+                  onClick={onClaim}
+                  className="w-full h-14 text-lg font-bold tracking-wide rounded-xl relative overflow-hidden"
+                  style={{
+                    background:
+                      "linear-gradient(135deg, oklch(0.72 0.22 50), oklch(0.65 0.25 40))",
+                    color: "oklch(0.12 0.02 50)",
+                    boxShadow:
+                      "0 4px 20px oklch(0.7 0.22 50 / 0.5), inset 0 1px 0 oklch(0.88 0.15 65 / 0.4)",
+                    border: "none",
+                  }}
+                  data-ocid="daily_reward.claim_button"
+                >
+                  <span className="relative z-10 flex items-center justify-center gap-2">
+                    <Flame className="w-5 h-5" />
+                    Claim Reward
+                  </span>
+                </Button>
+              )}
             </motion.div>
           </div>
         </motion.div>

@@ -7,6 +7,7 @@ interface Props {
   onWatchAd?: () => void;
   addCoins: (n: number, type: string) => Promise<void>;
   spendCoins: (n: number, type: string) => Promise<boolean>;
+  onViewHistory?: () => void;
 }
 
 const PACKAGES = [
@@ -41,12 +42,24 @@ const PACKAGES = [
 
 const SPIN_RESULTS = [10, 15, 20, 25, 30, 50, 75, 100, 150, 200];
 const SPIN_COST = 20;
+const LAST_CLAIM_KEY = "fansbattle_last_claim";
+
+function getDateString() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 function formatTime(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function secondsUntilMidnight() {
+  const now = new Date();
+  const midnight = new Date();
+  midnight.setHours(24, 0, 0, 0);
+  return Math.floor((midnight.getTime() - now.getTime()) / 1000);
 }
 
 function generateInviteCode() {
@@ -57,9 +70,16 @@ function generateInviteCode() {
   ).join("");
 }
 
-export default function Shop({ addCoins, spendCoins, onWatchAd }: Props) {
-  const [claimed, setClaimed] = useState(false);
-  const [countdown, setCountdown] = useState(83645);
+export default function Shop({
+  addCoins,
+  spendCoins,
+  onWatchAd,
+  onViewHistory,
+}: Props) {
+  const [claimedToday, setClaimedToday] = useState(() => {
+    return localStorage.getItem(LAST_CLAIM_KEY) === getDateString();
+  });
+  const [countdown, setCountdown] = useState(() => secondsUntilMidnight());
   const [isSpinning, setIsSpinning] = useState(false);
   const [lastResult, setLastResult] = useState<number | null>(null);
   const [inviteCode] = useState(() => generateInviteCode());
@@ -76,21 +96,41 @@ export default function Shop({ addCoins, spendCoins, onWatchAd }: Props) {
     };
   }, []);
 
+  // Re-check claim state when tab becomes visible
   useEffect(() => {
-    if (!claimed) return;
+    const check = () => {
+      setClaimedToday(localStorage.getItem(LAST_CLAIM_KEY) === getDateString());
+      setCountdown(secondsUntilMidnight());
+    };
+    document.addEventListener("visibilitychange", check);
+    return () => document.removeEventListener("visibilitychange", check);
+  }, []);
+
+  // Countdown timer for claimed state
+  useEffect(() => {
+    if (!claimedToday) return;
     const timer = setInterval(() => {
       setCountdown((prev) => (prev > 0 ? prev - 1 : 0));
     }, 1000);
     return () => clearInterval(timer);
-  }, [claimed]);
+  }, [claimedToday]);
 
   const handleClaim = async () => {
-    if (claimed) return;
-    setClaimed(true);
-    await addCoins(50, "daily_claim");
-    toast.success("🪙 +50 coins claimed! Come back tomorrow.", {
-      duration: 3000,
-    });
+    if (claimedToday) {
+      toast.info("Already claimed today! Come back tomorrow.");
+      return;
+    }
+    const today = getDateString();
+    if (localStorage.getItem(LAST_CLAIM_KEY) === today) {
+      setClaimedToday(true);
+      toast.info("Already claimed today! Come back tomorrow.");
+      return;
+    }
+    await addCoins(20, "daily_reward");
+    localStorage.setItem(LAST_CLAIM_KEY, today);
+    setClaimedToday(true);
+    setCountdown(secondsUntilMidnight());
+    toast.success("🪙 +20 coins! Daily reward claimed!", { duration: 3000 });
   };
 
   const handleBuy = (pkg: (typeof PACKAGES)[0]) => {
@@ -170,14 +210,31 @@ export default function Shop({ addCoins, spendCoins, onWatchAd }: Props) {
 
   return (
     <div className="px-4 py-4 space-y-4">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-2xl">🛙️</span>
-        <div>
-          <h2 className="font-display text-xl font-800 text-foreground">
-            Shop
-          </h2>
-          <p className="text-xs text-muted-foreground">Power up your game</p>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-2xl">🛙️</span>
+          <div>
+            <h2 className="font-display text-xl font-800 text-foreground">
+              Shop
+            </h2>
+            <p className="text-xs text-muted-foreground">Power up your game</p>
+          </div>
         </div>
+        {onViewHistory && (
+          <button
+            type="button"
+            onClick={onViewHistory}
+            data-ocid="shop.history.button"
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition-colors"
+            style={{
+              background: "oklch(0.22 0.05 250 / 0.6)",
+              border: "1px solid oklch(0.35 0.08 250 / 0.5)",
+              color: "oklch(0.72 0.1 250)",
+            }}
+          >
+            📜 History
+          </button>
+        )}
       </div>
 
       {/* Daily Claim */}
@@ -200,18 +257,24 @@ export default function Shop({ addCoins, spendCoins, onWatchAd }: Props) {
             Daily Free
           </p>
           <h3 className="font-display text-2xl font-800 text-foreground mt-1">
-            Claim 50 Coins
+            Claim 20 Coins
           </h3>
-          {claimed ? (
+          {claimedToday ? (
             <>
               <p
-                className="text-sm mt-2"
+                className="text-sm mt-2 font-600"
                 style={{ color: "oklch(0.75 0.1 80)" }}
+              >
+                Already Claimed Today ✓
+              </p>
+              <p
+                className="text-xs mt-1"
+                style={{ color: "oklch(0.6 0.08 80)" }}
               >
                 Next claim in:
               </p>
               <p
-                className="font-display text-xl font-800 mt-1"
+                className="font-display text-xl font-800 mt-0.5"
                 style={{ color: "oklch(0.88 0.18 90)" }}
               >
                 {formatTime(countdown)}
@@ -456,7 +519,13 @@ export default function Shop({ addCoins, spendCoins, onWatchAd }: Props) {
         ))}
       </div>
 
-      <div className="pt-4 pb-2 text-center">
+      {/* Legal Disclaimer */}
+      <p className="text-center text-xs text-muted-foreground/60 mt-2 px-2">
+        ⚠️ This app is for entertainment purposes only and is not affiliated with
+        IPL or BCCI.
+      </p>
+
+      <div className="pt-2 pb-2 text-center">
         <p className="text-xs text-muted-foreground">
           © {new Date().getFullYear()}. Built with ❤️ using{" "}
           <a

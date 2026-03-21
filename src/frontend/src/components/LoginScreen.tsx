@@ -80,6 +80,9 @@ export default function LoginScreen() {
         <p className="text-center text-xs text-muted-foreground mt-6">
           No sign-up required. Jump right in!
         </p>
+        <p className="text-center text-xs text-muted-foreground/50 mt-2 px-4">
+          For entertainment only. Not affiliated with IPL or BCCI.
+        </p>
       </motion.div>
     </div>
   );

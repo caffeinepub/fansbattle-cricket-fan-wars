@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { useUser } from "@/context/UserContext";
 import { db } from "@/lib/firebase";
+import { getUserVotesForPolls, storeVote } from "@/lib/firestore";
 import {
   addDoc,
   collection,
@@ -27,31 +28,28 @@ interface Poll {
   enabled: boolean;
 }
 
+// Seed polls use 0 votes — no fake/random numbers
 const DEFAULT_POLLS = [
   {
-    question: "Best Batsman Today?",
-    optionA: "Virat Kohli",
-    optionB: "Rohit Sharma",
+    question: "Best captain in world cricket right now?",
+    optionA: "Attacking Style",
+    optionB: "Defensive Style",
   },
   {
-    question: "Best Captain Right Now?",
-    optionA: "Rohit Sharma",
-    optionB: "MS Dhoni",
+    question: "T20 or Test cricket — which is better?",
+    optionA: "T20",
+    optionB: "Test",
   },
   {
-    question: "Who Will Win Tonight?",
-    optionA: "Team India",
-    optionB: "Opponent",
+    question: "Who wins a match more — bat or ball?",
+    optionA: "Batting",
+    optionB: "Bowling",
   },
+  { question: "Best format for young fans?", optionA: "T20", optionB: "ODI" },
   {
-    question: "Best T20 Finisher?",
-    optionA: "MS Dhoni",
-    optionB: "Hardik Pandya",
-  },
-  {
-    question: "Cricket GOAT?",
-    optionA: "Sachin Tendulkar",
-    optionB: "Virat Kohli",
+    question: "Home advantage — does it matter?",
+    optionA: "Yes, hugely",
+    optionB: "No, skill wins",
   },
 ];
 
@@ -62,22 +60,10 @@ interface Props {
 export default function VoteBattle({ addCoins }: Props) {
   const { userId } = useUser();
   const [polls, setPolls] = useState<Poll[]>([]);
+  // voted: loaded from Firestore (not localStorage)
   const [voted, setVoted] = useState<Record<string, "A" | "B">>({});
+  const [loadingVotes, setLoadingVotes] = useState(false);
   const seededRef = useRef(false);
-
-  // Load voted state from localStorage per user
-  useEffect(() => {
-    if (!userId) return;
-    const key = `fansbattle_votes_${userId}`;
-    const saved = localStorage.getItem(key);
-    if (saved) {
-      try {
-        setVoted(JSON.parse(saved));
-      } catch {
-        // ignore
-      }
-    }
-  }, [userId]);
 
   // Subscribe to polls
   useEffect(() => {
@@ -97,14 +83,15 @@ export default function VoteBattle({ addCoins }: Props) {
           .filter((p) => p.enabled);
         setPolls(data);
 
+        // Seed with 0 votes — no fake counts
         if (data.length === 0 && !seededRef.current) {
           seededRef.current = true;
           Promise.all(
             DEFAULT_POLLS.map((p) =>
               addDoc(collection(db, "polls"), {
                 ...p,
-                votesA: Math.floor(50 + Math.random() * 200),
-                votesB: Math.floor(50 + Math.random() * 200),
+                votesA: 0,
+                votesB: 0,
                 enabled: true,
                 createdAt: serverTimestamp(),
               }),
@@ -116,6 +103,18 @@ export default function VoteBattle({ addCoins }: Props) {
     return unsub;
   }, []);
 
+  // Load user's votes from Firestore when polls are available
+  // biome-ignore lint/correctness/useExhaustiveDependencies: polls.length is a proxy for poll list changes
+  useEffect(() => {
+    if (!userId || polls.length === 0) return;
+    setLoadingVotes(true);
+    const pollIds = polls.map((p) => p.id);
+    getUserVotesForPolls(userId, pollIds)
+      .then((result) => setVoted(result))
+      .catch(() => {})
+      .finally(() => setLoadingVotes(false));
+  }, [userId, polls.length]);
+
   const handleVote = async (poll: Poll, choice: "A" | "B") => {
     if (!userId) return;
     if (voted[poll.id]) {
@@ -123,19 +122,34 @@ export default function VoteBattle({ addCoins }: Props) {
       return;
     }
 
-    setVoted((prev) => {
-      const next = { ...prev, [poll.id]: choice };
-      localStorage.setItem(`fansbattle_votes_${userId}`, JSON.stringify(next));
-      return next;
-    });
+    // Optimistic UI update
+    setVoted((prev) => ({ ...prev, [poll.id]: choice }));
 
     try {
+      // Check + store in Firestore (prevents duplicate votes)
+      const stored = await storeVote(userId, poll.id, choice);
+      if (!stored) {
+        toast.error("Already voted on this poll!");
+        // Reload from Firestore to sync state
+        const result = await getUserVotesForPolls(userId, [poll.id]);
+        setVoted((prev) => ({ ...prev, ...result }));
+        return;
+      }
+
+      // Increment vote count
       await updateDoc(doc(db, "polls", poll.id), {
         [choice === "A" ? "votesA" : "votesB"]: increment(1),
       });
+
       await addCoins(3, "vote_reward");
       toast.success("+3 coins earned! 🪙", { duration: 2000 });
     } catch {
+      // Revert optimistic update on error
+      setVoted((prev) => {
+        const next = { ...prev };
+        delete next[poll.id];
+        return next;
+      });
       toast.error("Vote failed, try again.");
     }
   };
@@ -174,6 +188,15 @@ export default function VoteBattle({ addCoins }: Props) {
           LIVE
         </Badge>
       </div>
+
+      {/* Loading votes from Firestore */}
+      {loadingVotes && polls.length > 0 && (
+        <div className="text-center py-3">
+          <p className="text-xs" style={{ color: "oklch(0.55 0.05 255)" }}>
+            Loading your votes...
+          </p>
+        </div>
+      )}
 
       <AnimatePresence>
         {polls.map((poll, idx) => {
@@ -290,7 +313,7 @@ export default function VoteBattle({ addCoins }: Props) {
       {polls.length === 0 && (
         <div className="text-center py-16" data-ocid="vote_battle.empty_state">
           <div className="text-4xl mb-3">📊</div>
-          <p className="text-muted-foreground">Loading polls...</p>
+          <p className="text-muted-foreground">No polls available</p>
         </div>
       )}
     </div>

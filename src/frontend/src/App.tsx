@@ -7,6 +7,7 @@ import InterstitialAd from "@/components/InterstitialAd";
 import LoginScreen from "@/components/LoginScreen";
 import RewardedAdModal from "@/components/RewardedAdModal";
 import SplashScreen from "@/components/SplashScreen";
+import TransactionHistory from "@/components/TransactionHistory";
 import FriendsRoom from "@/components/tabs/FriendsRoom";
 import LiveMatch from "@/components/tabs/LiveMatch";
 import Shop from "@/components/tabs/Shop";
@@ -14,6 +15,7 @@ import StickerCreator from "@/components/tabs/StickerCreator";
 import VoteBattle from "@/components/tabs/VoteBattle";
 import { Toaster } from "@/components/ui/sonner";
 import { UserContextProvider, useUser } from "@/context/UserContext";
+import { claimDailyReward } from "@/lib/firestore";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -21,55 +23,35 @@ export type TabId = "live" | "vote" | "sticker" | "friends" | "shop" | "admin";
 
 type AppState = "splash" | "loading" | "login" | "main";
 
-const STREAK_REWARDS: Record<number, number> = {
-  1: 20,
-  2: 30,
-  3: 50,
-  4: 70,
-  5: 100,
-};
-
-const LAST_CLAIM_KEY = "fansbattle_last_claim";
-const STREAK_DAY_KEY = "fansbattle_streak_day";
+// Daily reward is always 20 coins — matches Firestore logic
+const DAILY_REWARD_COINS = 20;
 
 function getDateString(date: Date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
-function computeStreak(): { streakDay: number; shouldShow: boolean } {
-  const today = getDateString();
-  const lastClaim = localStorage.getItem(LAST_CLAIM_KEY);
-  const prevDay = Number.parseInt(
-    localStorage.getItem(STREAK_DAY_KEY) || "0",
-    10,
-  );
-  if (!lastClaim) return { streakDay: 1, shouldShow: true };
-  if (lastClaim === today) return { streakDay: prevDay, shouldShow: false };
-  const lastDate = new Date(lastClaim);
-  const todayDate = new Date(today);
-  const diffDays = Math.round(
-    (todayDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24),
-  );
-  if (diffDays === 1) {
-    return { streakDay: (prevDay % 5) + 1, shouldShow: true };
-  }
-  return { streakDay: 1, shouldShow: true };
-}
-
 function AppInner() {
-  const { userId, userData, loading, addCoins, spendCoins, isAdmin } =
-    useUser();
+  const {
+    userId,
+    userData,
+    loading,
+    addCoins,
+    spendCoins,
+    isAdmin,
+    refreshUserData,
+  } = useUser();
   const [appState, setAppState] = useState<AppState>("splash");
   const [activeTab, setActiveTab] = useState<TabId>("live");
   const [showDailyReward, setShowDailyReward] = useState(false);
-  const [streakDay, setStreakDay] = useState(1);
   const [showInterstitial, setShowInterstitial] = useState(false);
   const [showRewardedAd, setShowRewardedAd] = useState(false);
+  const [showTransactionHistory, setShowTransactionHistory] = useState(false);
+  // Track if ad reward has been collected (prevent double-click)
+  const [adRewardCollected, setAdRewardCollected] = useState(false);
 
   // After splash completes, move to loading/main/login depending on state
   const handleSplashComplete = () => {
     if (loading) {
-      // Still fetching user — show a brief loading state instead of blocking
       setAppState("loading");
     } else {
       setAppState(userId ? "main" : "login");
@@ -90,26 +72,54 @@ function AppInner() {
     }
   }, [userId, appState]);
 
-  // Daily reward on entering main
+  // Show daily reward modal once per day when entering main
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional - only triggers on appState transition
   useEffect(() => {
-    if (appState === "main") {
-      const { streakDay: day, shouldShow } = computeStreak();
-      if (shouldShow) {
-        setStreakDay(day);
+    if (appState === "main" && userData) {
+      const today = getDateString();
+      // Only show if not already claimed today (check Firestore data)
+      if (userData.lastClaimDate !== today) {
         setTimeout(() => setShowDailyReward(true), 800);
       }
     }
   }, [appState]);
 
+  // alreadyClaimed: source of truth is Firestore userData
+  const today = getDateString();
+  const alreadyClaimed = userData?.lastClaimDate === today;
+
   const handleClaimDailyReward = async () => {
-    const coins = STREAK_REWARDS[streakDay] ?? 20;
-    await addCoins(coins, "daily_reward");
-    localStorage.setItem(LAST_CLAIM_KEY, getDateString());
-    localStorage.setItem(STREAK_DAY_KEY, String(streakDay));
-    setShowDailyReward(false);
-    toast.success(`🔥 Day ${streakDay} reward claimed! +${coins} coins`, {
-      duration: 4000,
-    });
+    if (!userId) {
+      toast.error("Please start the app first");
+      return;
+    }
+
+    const result = await claimDailyReward(userId);
+
+    if (result.alreadyClaimed) {
+      toast.info("Already claimed today! Come back tomorrow. 📅");
+      setShowDailyReward(false);
+      return;
+    }
+
+    if (result.success) {
+      toast.success(`🪙 +${DAILY_REWARD_COINS} coins! Daily reward claimed!`, {
+        duration: 3000,
+      });
+      setShowDailyReward(false);
+      refreshUserData();
+    } else {
+      toast.error("Failed to claim reward. Try again.");
+    }
+  };
+
+  const handleAdReward = async () => {
+    if (adRewardCollected) return;
+    setAdRewardCollected(true);
+    await addCoins(20, "ad_reward");
+    setShowRewardedAd(false);
+    // Reset for next ad viewing session
+    setTimeout(() => setAdRewardCollected(false), 2000);
   };
 
   if (appState === "splash") {
@@ -177,7 +187,11 @@ function AppInner() {
           <Shop
             addCoins={addCoins}
             spendCoins={spendCoins}
-            onWatchAd={() => setShowRewardedAd(true)}
+            onWatchAd={() => {
+              setAdRewardCollected(false);
+              setShowRewardedAd(true);
+            }}
+            onViewHistory={() => setShowTransactionHistory(true)}
           />
         )}
         {activeTab === "admin" && isAdmin && <AdminPanel />}
@@ -193,9 +207,11 @@ function AppInner() {
 
       {showDailyReward && (
         <DailyRewardModal
-          streakDay={streakDay}
-          coinsToEarn={STREAK_REWARDS[streakDay] ?? 20}
+          streakDay={1}
+          coinsToEarn={DAILY_REWARD_COINS}
           onClaim={handleClaimDailyReward}
+          alreadyClaimed={alreadyClaimed}
+          onClose={() => setShowDailyReward(false)}
         />
       )}
 
@@ -207,10 +223,13 @@ function AppInner() {
       <RewardedAdModal
         isOpen={showRewardedAd}
         onClose={() => setShowRewardedAd(false)}
-        onReward={async () => {
-          await addCoins(20, "ad_reward");
-          setShowRewardedAd(false);
-        }}
+        onReward={handleAdReward}
+      />
+
+      <TransactionHistory
+        userId={userId}
+        isOpen={showTransactionHistory}
+        onClose={() => setShowTransactionHistory(false)}
       />
     </div>
   );

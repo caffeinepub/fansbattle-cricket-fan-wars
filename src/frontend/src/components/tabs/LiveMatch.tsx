@@ -1,6 +1,12 @@
 import { Badge } from "@/components/ui/badge";
+import { useUser } from "@/context/UserContext";
+import {
+  type LiveMatch as LiveMatchData,
+  fetchLiveMatches,
+} from "@/lib/cricketApi";
+import { getUserGuess, storeGuess } from "@/lib/firestore";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 interface Props {
@@ -12,89 +18,53 @@ interface Props {
 const GUESS_COST = 10;
 const CORRECT_REWARD = 25;
 
-type CardState = "idle" | "locked" | "resolved";
-
-interface GuessEvent {
-  id: number;
-  question: string;
-  options: string[];
-  emoji: string;
-  timer: number;
-}
-
-const EVENTS: GuessEvent[] = [
+// Generic questions that work for any match — options filled in dynamically
+const GENERIC_QUESTIONS = [
   {
-    id: 1,
+    id: "q_winner",
     question: "Who will win the match?",
-    options: ["India", "Australia"],
+    type: "teams",
     emoji: "🏆",
     timer: 60,
   },
   {
-    id: 2,
-    question: "Next wicket — which player?",
-    options: ["Virat Kohli", "Rohit Sharma", "Steve Smith", "David Warner"],
-    emoji: "🎳",
+    id: "q_century",
+    question: "Will there be a century in this match?",
+    options: ["Yes", "No"],
+    emoji: "💯",
     timer: 45,
   },
   {
-    id: 3,
-    question: "Next six — who hits it?",
-    options: ["Hardik Pandya", "MS Dhoni", "Glenn Maxwell", "Pat Cummins"],
-    emoji: "💥",
-    timer: 30,
-  },
-  {
-    id: 4,
-    question: "Over runs above 10?",
+    id: "q_over10",
+    question: "Over runs above 10 in the next over?",
     options: ["Yes", "No"],
     emoji: "📊",
     timer: 45,
   },
   {
-    id: 5,
-    question: "Next ball — boundary or dot?",
+    id: "q_boundary",
+    question: "Next ball result?",
     options: ["Boundary (4)", "Boundary (6)", "Dot Ball", "Single"],
     emoji: "🎯",
     timer: 20,
   },
+  {
+    id: "q_wicket",
+    question: "Wicket in the next 5 balls?",
+    options: ["Yes", "No"],
+    emoji: "🎳",
+    timer: 30,
+  },
 ];
 
-const MOCK_MATCHES = [
-  {
-    teamA: "IND",
-    teamB: "AUS",
-    scoreA: "187/4",
-    scoreB: "145/3",
-    oversA: "18.3",
-    oversB: "15.1",
-    status: "IND need 42 runs in 8.3 overs",
-    isLive: true,
-    event: "ICC World Cup 2026",
-  },
-  {
-    teamA: "RCB",
-    teamB: "MI",
-    scoreA: "201/3",
-    scoreB: "198/7",
-    oversA: "20.0",
-    oversB: "20.0",
-    status: "RCB won by 3 runs",
-    isLive: false,
-    event: "IPL 2026",
-  },
-  {
-    teamA: "CSK",
-    teamB: "KKR",
-    scoreA: "176/6",
-    scoreB: "162/8",
-    oversA: "20.0",
-    oversB: "18.4",
-    status: "CSK need 15 runs in 8 balls",
-    isLive: true,
-    event: "IPL 2026",
-  },
-];
+type CardState = "idle" | "locked" | "resolved";
+
+interface CardData {
+  state: CardState;
+  selected: string | null;
+  timeLeft: number;
+  isCorrect: boolean | null;
+}
 
 function formatTime(seconds: number): string {
   if (seconds >= 60) {
@@ -105,530 +75,750 @@ function formatTime(seconds: number): string {
   return `${seconds}s`;
 }
 
-interface CardData {
-  state: CardState;
-  selected: string | null;
-  timeLeft: number;
-  isCorrect: boolean | null;
+function MatchCard({
+  match,
+  isSelected,
+  onTap,
+}: { match: LiveMatchData; isSelected: boolean; onTap: () => void }) {
+  return (
+    <motion.div
+      key={match.id}
+      initial={{ opacity: 0, y: -16 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="card-glass rounded-2xl overflow-hidden cursor-pointer"
+      onClick={onTap}
+      style={{
+        border: isSelected
+          ? "1px solid oklch(0.65 0.2 230 / 0.7)"
+          : "1px solid oklch(0.25 0.04 255 / 0.4)",
+        boxShadow: isSelected
+          ? "0 0 16px oklch(0.65 0.2 230 / 0.25)"
+          : undefined,
+      }}
+    >
+      {/* Top bar */}
+      <div
+        className="px-4 py-2 flex items-center justify-between"
+        style={{
+          background: "oklch(0.18 0.04 255 / 0.6)",
+          borderBottom: "1px solid oklch(0.3 0.05 255 / 0.3)",
+        }}
+      >
+        <Badge
+          className="text-xs font-bold px-2 py-0.5 flex items-center gap-1"
+          style={{
+            background: "oklch(0.62 0.22 15)",
+            color: "white",
+            border: "none",
+          }}
+        >
+          <span className="live-dot mr-1" /> LIVE
+        </Badge>
+        <span
+          className="text-xs font-semibold"
+          style={{ color: "oklch(0.75 0.18 90)" }}
+        >
+          {match.event}
+        </span>
+        <span className="text-xs" style={{ color: "oklch(0.55 0.05 255)" }}>
+          {isSelected ? "▲ Hide" : "▼ Guess"}
+        </span>
+      </div>
+
+      {/* Score section */}
+      <div className="p-4">
+        <div className="flex items-center justify-between">
+          <div className="text-center flex-1">
+            <p
+              className="font-display text-xs font-semibold uppercase tracking-widest mb-1"
+              style={{ color: "oklch(0.75 0.06 255)" }}
+            >
+              {match.teamA}
+            </p>
+            <p
+              className="font-display text-2xl font-bold"
+              style={{ color: "oklch(0.95 0.04 255)" }}
+            >
+              {match.scoreA}
+            </p>
+            <p className="text-xs" style={{ color: "oklch(0.65 0.05 255)" }}>
+              {match.oversA} ov
+            </p>
+          </div>
+          <div
+            className="w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+            style={{
+              background: "oklch(0.22 0.04 255 / 0.8)",
+              border: "1px solid oklch(0.35 0.06 255)",
+              color: "oklch(0.7 0.06 255)",
+            }}
+          >
+            VS
+          </div>
+          <div className="text-center flex-1">
+            <p
+              className="font-display text-xs font-semibold uppercase tracking-widest mb-1"
+              style={{ color: "oklch(0.75 0.06 255)" }}
+            >
+              {match.teamB}
+            </p>
+            <p
+              className="font-display text-2xl font-bold"
+              style={{ color: "oklch(0.88 0.18 90)" }}
+            >
+              {match.scoreB}
+            </p>
+            <p className="text-xs" style={{ color: "oklch(0.65 0.05 255)" }}>
+              {match.oversB} ov
+            </p>
+          </div>
+        </div>
+        <div
+          className="mt-3 px-3 py-2 rounded-xl text-xs text-center font-semibold"
+          style={{
+            background: "oklch(0.2 0.04 255 / 0.5)",
+            color: "oklch(0.75 0.1 255)",
+          }}
+        >
+          {match.status}
+        </div>
+      </div>
+    </motion.div>
+  );
 }
 
 export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
-  const [matchIdx, setMatchIdx] = useState(0);
-  const match = MOCK_MATCHES[matchIdx % MOCK_MATCHES.length];
+  const { userId } = useUser();
+  const [liveMatches, setLiveMatches] = useState<LiveMatchData[]>([]);
+  const [fetchError, setFetchError] = useState(false);
+  const [loadingMatches, setLoadingMatches] = useState(true);
+  const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
 
-  const [cards, setCards] = useState<Record<number, CardData>>(() =>
-    Object.fromEntries(
-      EVENTS.map((e) => [
-        e.id,
-        {
-          state: "idle" as CardState,
-          selected: null,
-          timeLeft: e.timer,
-          isCorrect: null,
-        },
-      ]),
-    ),
-  );
+  // Per-match guess state: { [matchId]: { [questionId]: CardData } }
+  const [guessState, setGuessState] = useState<
+    Record<string, Record<string, CardData>>
+  >({});
+  // Already-guessed (from Firestore): { [matchId+questionId]: choice }
+  const [existingGuesses, setExistingGuesses] = useState<
+    Record<string, string>
+  >({});
+  const [loadingGuesses, setLoadingGuesses] = useState(false);
 
-  const intervals = useRef<Record<number, ReturnType<typeof setInterval>>>({});
+  const intervals = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
-  // Auto-refresh match data every 20 seconds
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setMatchIdx((prev) => prev + 1);
-    }, 20000);
-    return () => clearInterval(timer);
+  const loadMatches = useCallback(async () => {
+    try {
+      setLoadingMatches(true);
+      const matches = await fetchLiveMatches();
+      setLiveMatches(matches);
+      setFetchError(false);
+    } catch {
+      setFetchError(true);
+    } finally {
+      setLoadingMatches(false);
+    }
   }, []);
 
   useEffect(() => {
+    loadMatches();
+    const interval = setInterval(loadMatches, 15000);
+    return () => clearInterval(interval);
+  }, [loadMatches]);
+
+  useEffect(() => {
+    const saved = intervals.current;
     return () => {
-      Object.values(intervals.current).forEach(clearInterval);
+      for (const k of Object.values(saved)) clearInterval(k);
     };
   }, []);
 
-  const selectOption = (eventId: number, option: string) => {
-    setCards((prev) => {
-      if (prev[eventId].state !== "idle") return prev;
-      return { ...prev, [eventId]: { ...prev[eventId], selected: option } };
+  // Load existing guesses from Firestore when a match is selected
+  const handleSelectMatch = useCallback(
+    async (matchId: string) => {
+      if (selectedMatchId === matchId) {
+        setSelectedMatchId(null);
+        return;
+      }
+      setSelectedMatchId(matchId);
+      if (!userId) return;
+
+      setLoadingGuesses(true);
+      const results: Record<string, string> = {};
+      await Promise.all(
+        GENERIC_QUESTIONS.map(async (q) => {
+          const existing = await getUserGuess(userId, matchId, q.id);
+          if (existing) results[`${matchId}__${q.id}`] = existing.choice;
+        }),
+      );
+      setExistingGuesses((prev) => ({ ...prev, ...results }));
+      setLoadingGuesses(false);
+    },
+    [selectedMatchId, userId],
+  );
+
+  const getCard = (
+    matchId: string,
+    questionId: string,
+    timer: number,
+  ): CardData => {
+    return (
+      guessState[matchId]?.[questionId] ?? {
+        state: "idle",
+        selected: null,
+        timeLeft: timer,
+        isCorrect: null,
+      }
+    );
+  };
+
+  const setCard = (
+    matchId: string,
+    questionId: string,
+    updater: (prev: CardData) => CardData,
+  ) => {
+    setGuessState((prev) => {
+      const matchCards = prev[matchId] ?? {};
+      const existing = matchCards[questionId] ?? {
+        state: "idle",
+        selected: null,
+        timeLeft: 0,
+        isCorrect: null,
+      };
+      return {
+        ...prev,
+        [matchId]: { ...matchCards, [questionId]: updater(existing) },
+      };
     });
   };
 
-  const lockGuess = async (eventId: number) => {
-    const card = cards[eventId];
+  const selectOption = (
+    matchId: string,
+    questionId: string,
+    option: string,
+    timer: number,
+  ) => {
+    const card = getCard(matchId, questionId, timer);
+    if (card.state !== "idle") return;
+    setCard(matchId, questionId, (c) => ({ ...c, selected: option }));
+  };
+
+  const lockGuess = async (
+    matchId: string,
+    question: (typeof GENERIC_QUESTIONS)[0],
+    match: LiveMatchData,
+  ) => {
+    const card = getCard(matchId, question.id, question.timer);
     if (!card.selected) {
       toast.error("Select an option first!");
       return;
     }
+    if (!userId) {
+      toast.error("Please log in first");
+      return;
+    }
+
+    // Check Firestore for duplicate
+    const existing = existingGuesses[`${matchId}__${question.id}`];
+    if (existing) {
+      toast.info(`Already guessed: ${existing}`);
+      return;
+    }
+
     const ok = await spendCoins(GUESS_COST, "guess_entry");
     if (!ok) return;
 
-    setCards((prev) => ({
-      ...prev,
-      [eventId]: { ...prev[eventId], state: "locked" },
+    // Store in Firestore
+    try {
+      await storeGuess(userId, matchId, question.id, card.selected);
+      setExistingGuesses((prev) => ({
+        ...prev,
+        [`${matchId}__${question.id}`]: card.selected!,
+      }));
+    } catch {
+      toast.error("Failed to store guess");
+      return;
+    }
+
+    setCard(matchId, question.id, (c) => ({
+      ...c,
+      state: "locked",
+      timeLeft: question.timer,
     }));
+    void match; // match data available if needed
 
-    const event = EVENTS.find((e) => e.id === eventId)!;
-    let remaining = event.timer;
-
+    let remaining = question.timer;
+    const key = `${matchId}__${question.id}`;
     const interval = setInterval(async () => {
       remaining -= 1;
-      setCards((prev) => ({
-        ...prev,
-        [eventId]: { ...prev[eventId], timeLeft: remaining },
-      }));
-
+      setCard(matchId, question.id, (c) => ({ ...c, timeLeft: remaining }));
       if (remaining <= 0) {
         clearInterval(interval);
-        delete intervals.current[eventId];
-
+        delete intervals.current[key];
+        // Resolution: random for now (no outcome API available)
         const correct = Math.random() < 0.5;
         if (correct) await addCoins(CORRECT_REWARD, "correct_guess");
-
-        setCards((prev) => ({
-          ...prev,
-          [eventId]: {
-            ...prev[eventId],
-            state: "resolved",
-            isCorrect: correct,
-            timeLeft: 0,
-          },
+        setCard(matchId, question.id, (c) => ({
+          ...c,
+          state: "resolved",
+          isCorrect: correct,
+          timeLeft: 0,
         }));
-
         if (Math.random() < 0.4) onGameEnd?.();
-
-        if (correct) {
+        if (correct)
           toast.success(`🏑 Correct! +${CORRECT_REWARD} 🪙`, {
             duration: 3000,
           });
-        } else {
+        else
           toast.error(`❌ Wrong guess! Lost ${GUESS_COST} 🪙`, {
             duration: 3000,
           });
-        }
       }
     }, 1000);
-
-    intervals.current[eventId] = interval;
+    intervals.current[key] = interval;
   };
-
-  const liveMatches = MOCK_MATCHES.filter((m) => m.isLive);
 
   return (
     <div className="px-4 py-4 space-y-4 pb-24">
-      {/* Live Match Score Card */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="card-glass rounded-2xl overflow-hidden"
-      >
-        <div
-          className="relative h-36"
+      {/* Section header */}
+      <div className="flex items-center justify-between">
+        <h2
+          className="font-display text-lg font-bold"
+          style={{ color: "oklch(0.92 0.04 255)" }}
+        >
+          🏏 Live Matches
+        </h2>
+        <Badge
+          className="text-xs px-2 py-0.5"
           style={{
-            backgroundImage: `url('/assets/generated/stadium-bg.dim_430x200.jpg')`,
-            backgroundSize: "cover",
-            backgroundPosition: "center",
+            background: "oklch(0.62 0.2 140 / 0.15)",
+            color: "oklch(0.75 0.18 140)",
+            border: "1px solid oklch(0.62 0.2 140 / 0.3)",
           }}
         >
-          <div
-            className="absolute inset-0"
-            style={{
-              background:
-                "linear-gradient(to bottom, oklch(0.13 0.025 255 / 0.3), oklch(0.13 0.025 255 / 0.9))",
-            }}
-          />
-          <div className="absolute top-3 left-3 flex items-center gap-2">
-            {match.isLive ? (
-              <Badge
-                className="text-xs font-bold px-2 py-0.5 flex items-center gap-1"
-                style={{
-                  background: "oklch(0.62 0.22 15)",
-                  color: "white",
-                  border: "none",
-                }}
-              >
-                <span className="live-dot" /> LIVE
-              </Badge>
-            ) : (
-              <Badge
-                className="text-xs font-bold px-2 py-0.5"
-                style={{
-                  background: "oklch(0.35 0.05 255)",
-                  color: "oklch(0.7 0.04 255)",
-                  border: "none",
-                }}
-              >
-                ENDED
-              </Badge>
-            )}
-            <span
-              className="text-xs font-semibold"
-              style={{ color: "oklch(0.75 0.18 90)" }}
-            >
-              {match.event}
-            </span>
-          </div>
-          <div className="absolute bottom-0 left-0 right-0 p-4">
-            <div className="flex items-center justify-between">
-              <div className="text-center flex-1">
-                <p
-                  className="font-display text-xs font-semibold uppercase tracking-widest mb-0.5"
-                  style={{ color: "oklch(0.75 0.06 255)" }}
-                >
-                  {match.teamA}
-                </p>
-                <p
-                  className="font-display text-3xl font-bold"
-                  style={{ color: "oklch(0.95 0.04 255)" }}
-                >
-                  {match.scoreA}
-                </p>
-                <p
-                  className="text-xs"
-                  style={{ color: "oklch(0.65 0.05 255)" }}
-                >
-                  {match.oversA} ov
-                </p>
-              </div>
-              <div className="flex flex-col items-center px-3">
-                <div
-                  className="w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold"
-                  style={{
-                    background: "oklch(0.22 0.04 255 / 0.8)",
-                    border: "1px solid oklch(0.35 0.06 255)",
-                    color: "oklch(0.7 0.06 255)",
-                  }}
-                >
-                  VS
-                </div>
-              </div>
-              <div className="text-center flex-1">
-                <p
-                  className="font-display text-xs font-semibold uppercase tracking-widest mb-0.5"
-                  style={{ color: "oklch(0.75 0.06 255)" }}
-                >
-                  {match.teamB}
-                </p>
-                <p
-                  className="font-display text-3xl font-bold"
-                  style={{ color: "oklch(0.88 0.18 90)" }}
-                >
-                  {match.scoreB}
-                </p>
-                <p
-                  className="text-xs"
-                  style={{ color: "oklch(0.65 0.05 255)" }}
-                >
-                  {match.oversB} ov
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
+          🔄 Auto-refreshing
+        </Badge>
+      </div>
 
+      {/* Loading state */}
+      {loadingMatches && liveMatches.length === 0 && (
         <div
-          className="px-4 py-2 flex items-center justify-between text-xs"
-          style={{
-            background: "oklch(0.18 0.04 255 / 0.6)",
-            borderTop: "1px solid oklch(0.3 0.05 255 / 0.4)",
-          }}
+          data-ocid="live_match.loading_state"
+          className="card-glass rounded-2xl p-8 flex flex-col items-center gap-3"
         >
-          <span style={{ color: "oklch(0.7 0.06 255)" }}>
-            🔄 Updates every 20s
-          </span>
-          <span style={{ color: "oklch(0.88 0.18 90)" }}>{match.status}</span>
-        </div>
-      </motion.div>
-
-      {/* No live match banner */}
-      {liveMatches.length === 0 && (
-        <div
-          className="card-glass rounded-2xl p-6 text-center"
-          data-ocid="live_match.empty_state"
-        >
-          <div className="text-4xl mb-3">🏑</div>
-          <p className="text-foreground font-display font-700">
-            No live match right now
-          </p>
-          <p className="text-muted-foreground text-sm mt-1">
-            Check back later for live action!
+          <div className="animate-spin text-4xl">🏏</div>
+          <p className="text-sm" style={{ color: "oklch(0.6 0.05 255)" }}>
+            Loading live matches...
           </p>
         </div>
       )}
 
-      {/* Section Header */}
-      <div className="flex items-center justify-between">
-        <h3
-          className="font-display text-sm font-bold uppercase tracking-widest"
-          style={{ color: "oklch(0.7 0.08 255)" }}
-        >
-          🎯 Guess &amp; Earn
-        </h3>
+      {/* Error state */}
+      {fetchError && liveMatches.length === 0 && (
         <div
-          className="text-xs font-semibold px-2.5 py-1 rounded-full"
-          style={{
-            background: "oklch(0.72 0.18 50 / 0.15)",
-            color: "oklch(0.82 0.18 60)",
-            border: "1px solid oklch(0.72 0.18 50 / 0.3)",
-          }}
+          data-ocid="live_match.error_state"
+          className="card-glass rounded-2xl p-6 text-center"
         >
-          10 🪙 per guess
-        </div>
-      </div>
-
-      {/* Guess Cards */}
-      {EVENTS.map((event, idx) => {
-        const card = cards[event.id];
-        const isIdle = card.state === "idle";
-        const isLocked = card.state === "locked";
-        const isResolved = card.state === "resolved";
-        const isCorrect = card.isCorrect;
-
-        const glowStyle = isResolved
-          ? isCorrect
-            ? {
-                boxShadow:
-                  "0 0 24px oklch(0.62 0.2 140 / 0.5), 0 0 1px oklch(0.62 0.2 140)",
-              }
-            : {
-                boxShadow:
-                  "0 0 24px oklch(0.62 0.22 15 / 0.5), 0 0 1px oklch(0.62 0.22 15)",
-              }
-          : {};
-
-        return (
-          <motion.div
-            key={event.id}
-            data-ocid={`live_match.guess.card.${idx + 1}`}
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{
-              delay: idx * 0.08,
-              type: "spring",
-              stiffness: 280,
-              damping: 22,
+          <div className="text-4xl mb-3">📡</div>
+          <p className="font-bold" style={{ color: "oklch(0.92 0.04 255)" }}>
+            Could not load live matches
+          </p>
+          <p className="text-sm mt-1" style={{ color: "oklch(0.6 0.05 255)" }}>
+            Check your connection or try again later
+          </p>
+          <button
+            type="button"
+            onClick={loadMatches}
+            data-ocid="live_match.retry_button"
+            className="mt-4 px-4 py-2 rounded-xl text-sm font-bold transition-opacity hover:opacity-80"
+            style={{
+              background: "oklch(0.65 0.18 220 / 0.2)",
+              border: "1px solid oklch(0.65 0.18 220 / 0.4)",
+              color: "oklch(0.78 0.12 220)",
             }}
-            className="card-glass rounded-2xl p-4"
-            style={glowStyle}
           >
-            <div className="flex items-start justify-between mb-3">
-              <div className="flex items-start gap-2 flex-1">
-                <span className="text-2xl leading-none mt-0.5">
-                  {event.emoji}
-                </span>
-                <p
-                  className="font-display text-sm font-bold leading-snug"
-                  style={{ color: "oklch(0.92 0.04 255)" }}
-                >
-                  {event.question}
-                </p>
-              </div>
-              <AnimatePresence mode="wait">
-                {isIdle && (
+            🔄 Retry
+          </button>
+        </div>
+      )}
+
+      {/* No live matches */}
+      {!loadingMatches && liveMatches.length === 0 && !fetchError && (
+        <div
+          data-ocid="live_match.empty_state"
+          className="card-glass rounded-2xl p-6 text-center"
+        >
+          <div className="text-4xl mb-3">🏟️</div>
+          <p className="font-bold" style={{ color: "oklch(0.92 0.04 255)" }}>
+            No live matches currently
+          </p>
+          <p className="text-sm mt-1" style={{ color: "oklch(0.6 0.05 255)" }}>
+            Check back soon for live action!
+          </p>
+          <p className="text-xs mt-3" style={{ color: "oklch(0.45 0.04 255)" }}>
+            Auto-refreshing every 15 seconds
+          </p>
+        </div>
+      )}
+
+      {/* Live matches list */}
+      {liveMatches.length > 0 && (
+        <div className="space-y-3">
+          {liveMatches.map((match) => (
+            <div key={match.id}>
+              <MatchCard
+                match={match}
+                isSelected={selectedMatchId === match.id}
+                onTap={() => handleSelectMatch(match.id)}
+              />
+
+              {/* Inline guess panel for selected match */}
+              <AnimatePresence>
+                {selectedMatchId === match.id && (
                   <motion.div
-                    key="idle-timer"
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.8 }}
-                    className="ml-2 flex-shrink-0 text-xs font-bold px-2 py-1 rounded-full"
-                    style={{
-                      background: "oklch(0.72 0.18 50 / 0.15)",
-                      color: "oklch(0.82 0.18 55)",
-                      border: "1px solid oklch(0.72 0.18 50 / 0.4)",
-                    }}
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.25 }}
+                    className="overflow-hidden"
                   >
-                    ⏱ {formatTime(event.timer)}
-                  </motion.div>
-                )}
-                {isLocked && (
-                  <motion.div
-                    key="locked-timer"
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.8 }}
-                    className="ml-2 flex-shrink-0 text-xs font-bold px-2 py-1 rounded-full"
-                    style={{
-                      background:
-                        card.timeLeft <= 10
-                          ? "oklch(0.62 0.22 15 / 0.2)"
-                          : "oklch(0.72 0.18 50 / 0.15)",
-                      color:
-                        card.timeLeft <= 10
-                          ? "oklch(0.75 0.2 15)"
-                          : "oklch(0.82 0.18 55)",
-                      border: `1px solid ${card.timeLeft <= 10 ? "oklch(0.62 0.22 15 / 0.4)" : "oklch(0.72 0.18 50 / 0.4)"}`,
-                    }}
-                  >
-                    ⏱ {formatTime(card.timeLeft)}
-                  </motion.div>
-                )}
-                {isResolved && (
-                  <motion.div
-                    key="resolved-badge"
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="ml-2 flex-shrink-0 text-xs font-bold px-2 py-1 rounded-full"
-                    style={{
-                      background: isCorrect
-                        ? "oklch(0.62 0.2 140 / 0.2)"
-                        : "oklch(0.62 0.22 15 / 0.2)",
-                      color: isCorrect
-                        ? "oklch(0.75 0.18 140)"
-                        : "oklch(0.75 0.2 15)",
-                      border: `1px solid ${isCorrect ? "oklch(0.62 0.2 140 / 0.4)" : "oklch(0.62 0.22 15 / 0.4)"}`,
-                    }}
-                  >
-                    {isCorrect ? "✅ Won" : "❌ Lost"}
+                    <div className="pt-3 space-y-3">
+                      {/* Match Detail Header */}
+                      <div
+                        className="card-glass rounded-2xl px-4 py-3"
+                        style={{
+                          border: "1px solid oklch(0.65 0.2 230 / 0.3)",
+                        }}
+                      >
+                        <p
+                          className="font-display text-sm font-bold mb-1"
+                          style={{ color: "oklch(0.88 0.12 230)" }}
+                        >
+                          🎯 Guess &amp; Earn — {match.teamA} vs {match.teamB}
+                        </p>
+                        <p
+                          className="text-xs"
+                          style={{ color: "oklch(0.55 0.05 255)" }}
+                        >
+                          Entry: {GUESS_COST} 🪙 · Correct reward:{" "}
+                          {CORRECT_REWARD} 🪙 · One guess per question
+                        </p>
+                      </div>
+
+                      {loadingGuesses && (
+                        <div className="text-center py-4">
+                          <div className="animate-spin text-2xl">⏳</div>
+                          <p
+                            className="text-xs mt-2"
+                            style={{ color: "oklch(0.55 0.05 255)" }}
+                          >
+                            Loading your guesses...
+                          </p>
+                        </div>
+                      )}
+
+                      {!loadingGuesses &&
+                        GENERIC_QUESTIONS.map((question, idx) => {
+                          const existingKey = `${match.id}__${question.id}`;
+                          const alreadyGuessed = existingGuesses[existingKey];
+                          const card = getCard(
+                            match.id,
+                            question.id,
+                            question.timer,
+                          );
+                          const isIdle =
+                            card.state === "idle" && !alreadyGuessed;
+                          const isLocked = card.state === "locked";
+                          const isResolved = card.state === "resolved";
+                          const isCorrect = card.isCorrect;
+
+                          // Build options: for "teams" type, use actual team names
+                          const options =
+                            question.type === "teams"
+                              ? [match.teamA, match.teamB]
+                              : (question.options ?? []);
+
+                          const glowStyle = isResolved
+                            ? isCorrect
+                              ? {
+                                  boxShadow:
+                                    "0 0 24px oklch(0.62 0.2 140 / 0.5)",
+                                }
+                              : {
+                                  boxShadow:
+                                    "0 0 24px oklch(0.62 0.22 15 / 0.5)",
+                                }
+                            : {};
+
+                          return (
+                            <motion.div
+                              key={question.id}
+                              data-ocid={`live_match.guess.card.${idx + 1}`}
+                              initial={{ opacity: 0, y: 16 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: idx * 0.06 }}
+                              className="card-glass rounded-2xl p-4"
+                              style={glowStyle}
+                            >
+                              <div className="flex items-start justify-between mb-3">
+                                <div className="flex items-start gap-2 flex-1">
+                                  <span className="text-2xl leading-none mt-0.5">
+                                    {question.emoji}
+                                  </span>
+                                  <p
+                                    className="font-display text-sm font-bold leading-snug"
+                                    style={{ color: "oklch(0.92 0.04 255)" }}
+                                  >
+                                    {question.question}
+                                  </p>
+                                </div>
+                                <div
+                                  className="ml-2 flex-shrink-0 text-xs font-bold px-2 py-1 rounded-full"
+                                  style={{
+                                    background: alreadyGuessed
+                                      ? "oklch(0.55 0.15 220 / 0.2)"
+                                      : isLocked
+                                        ? "oklch(0.72 0.18 50 / 0.15)"
+                                        : isResolved
+                                          ? isCorrect
+                                            ? "oklch(0.62 0.2 140 / 0.2)"
+                                            : "oklch(0.62 0.22 15 / 0.2)"
+                                          : "oklch(0.72 0.18 50 / 0.15)",
+                                    color: alreadyGuessed
+                                      ? "oklch(0.78 0.15 220)"
+                                      : isLocked
+                                        ? "oklch(0.82 0.18 55)"
+                                        : isResolved
+                                          ? isCorrect
+                                            ? "oklch(0.75 0.18 140)"
+                                            : "oklch(0.75 0.2 15)"
+                                          : "oklch(0.82 0.18 55)",
+                                    border:
+                                      "1px solid oklch(0.35 0.06 255 / 0.4)",
+                                  }}
+                                >
+                                  {alreadyGuessed
+                                    ? `✓ ${alreadyGuessed}`
+                                    : isLocked
+                                      ? `⏱ ${formatTime(card.timeLeft)}`
+                                      : isResolved
+                                        ? isCorrect
+                                          ? "✅ Won"
+                                          : "❌ Lost"
+                                        : `⏱ ${formatTime(question.timer)}`}
+                                </div>
+                              </div>
+
+                              {/* Already guessed from Firestore */}
+                              {alreadyGuessed && (
+                                <div
+                                  className="rounded-xl px-3 py-2.5 text-sm text-center font-semibold"
+                                  style={{
+                                    background: "oklch(0.55 0.15 220 / 0.12)",
+                                    color: "oklch(0.75 0.12 220)",
+                                    border:
+                                      "1px solid oklch(0.55 0.15 220 / 0.3)",
+                                  }}
+                                >
+                                  You already guessed:{" "}
+                                  <strong>{alreadyGuessed}</strong>
+                                </div>
+                              )}
+
+                              {/* Option buttons */}
+                              {!alreadyGuessed && (
+                                <>
+                                  <div className="grid grid-cols-2 gap-2 mb-3">
+                                    {options.map((opt, optIdx) => {
+                                      const isSelected = card.selected === opt;
+                                      const isDisabled = !isIdle;
+                                      let bgColor = "oklch(0.2 0.04 255)";
+                                      let borderColor = "oklch(0.3 0.04 255)";
+                                      let textColor = "oklch(0.7 0.05 255)";
+                                      let shadow = "none";
+
+                                      if (isSelected && isIdle) {
+                                        bgColor = "oklch(0.62 0.18 230 / 0.2)";
+                                        borderColor = "oklch(0.65 0.18 230)";
+                                        textColor = "oklch(0.88 0.12 230)";
+                                        shadow =
+                                          "0 0 10px oklch(0.65 0.18 230 / 0.35)";
+                                      } else if (isSelected && isLocked) {
+                                        bgColor = "oklch(0.72 0.18 50 / 0.15)";
+                                        borderColor =
+                                          "oklch(0.72 0.18 50 / 0.6)";
+                                        textColor = "oklch(0.88 0.16 60)";
+                                        shadow =
+                                          "0 0 10px oklch(0.72 0.18 50 / 0.3)";
+                                      } else if (isSelected && isResolved) {
+                                        if (isCorrect) {
+                                          bgColor = "oklch(0.62 0.2 140 / 0.2)";
+                                          borderColor = "oklch(0.62 0.2 140)";
+                                          textColor = "oklch(0.78 0.16 140)";
+                                        } else {
+                                          bgColor = "oklch(0.62 0.22 15 / 0.2)";
+                                          borderColor = "oklch(0.62 0.22 15)";
+                                          textColor = "oklch(0.78 0.18 15)";
+                                        }
+                                      }
+
+                                      return (
+                                        <button
+                                          key={opt}
+                                          type="button"
+                                          data-ocid={`live_match.guess.button.${optIdx + 1}`}
+                                          onClick={() =>
+                                            selectOption(
+                                              match.id,
+                                              question.id,
+                                              opt,
+                                              question.timer,
+                                            )
+                                          }
+                                          disabled={isDisabled}
+                                          className="text-left text-sm px-3 py-2.5 rounded-xl transition-all duration-200 font-semibold"
+                                          style={{
+                                            background: bgColor,
+                                            border: `1px solid ${borderColor}`,
+                                            color: textColor,
+                                            boxShadow: shadow,
+                                            opacity:
+                                              isDisabled && !isSelected
+                                                ? 0.45
+                                                : 1,
+                                            cursor: isDisabled
+                                              ? "default"
+                                              : "pointer",
+                                          }}
+                                        >
+                                          <span
+                                            className="text-xs font-bold mr-1"
+                                            style={{
+                                              color: "oklch(0.55 0.06 255)",
+                                            }}
+                                          >
+                                            {String.fromCharCode(65 + optIdx)}.
+                                          </span>
+                                          {opt}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+
+                                  <AnimatePresence mode="wait">
+                                    {isIdle && (
+                                      <motion.button
+                                        key="cta-guess"
+                                        data-ocid={`live_match.guess.submit_button.${idx + 1}`}
+                                        type="button"
+                                        initial={{ opacity: 0, y: 8 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        exit={{ opacity: 0, y: -8 }}
+                                        onClick={() =>
+                                          lockGuess(match.id, question, match)
+                                        }
+                                        whileTap={{ scale: 0.97 }}
+                                        className="w-full py-3 rounded-xl font-display font-bold text-sm transition-all"
+                                        style={{
+                                          background:
+                                            "linear-gradient(135deg, oklch(0.72 0.18 50), oklch(0.76 0.2 40))",
+                                          color: "oklch(0.12 0.02 50)",
+                                          boxShadow:
+                                            "0 4px 16px oklch(0.72 0.18 50 / 0.35)",
+                                        }}
+                                      >
+                                        Guess · {GUESS_COST} 🪙
+                                      </motion.button>
+                                    )}
+                                    {isLocked && (
+                                      <motion.div
+                                        key="cta-locked"
+                                        initial={{ opacity: 0, scale: 0.95 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        className="w-full py-3 rounded-xl text-center"
+                                        style={{
+                                          background:
+                                            "oklch(0.72 0.18 50 / 0.08)",
+                                          border:
+                                            "1px solid oklch(0.72 0.18 50 / 0.25)",
+                                        }}
+                                      >
+                                        <p
+                                          className="text-sm font-bold"
+                                          style={{
+                                            color: "oklch(0.82 0.14 60)",
+                                          }}
+                                        >
+                                          ⏳ Awaiting Result...
+                                        </p>
+                                        <p
+                                          className="text-xs mt-0.5"
+                                          style={{
+                                            color: "oklch(0.6 0.08 255)",
+                                          }}
+                                        >
+                                          Locked in: {card.selected}
+                                        </p>
+                                      </motion.div>
+                                    )}
+                                    {isResolved && (
+                                      <motion.div
+                                        key="cta-resolved"
+                                        initial={{ opacity: 0, scale: 0.95 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        className="w-full py-3 rounded-xl text-center"
+                                        style={{
+                                          background: isCorrect
+                                            ? "oklch(0.62 0.2 140 / 0.12)"
+                                            : "oklch(0.62 0.22 15 / 0.12)",
+                                          border: `1px solid ${isCorrect ? "oklch(0.62 0.2 140 / 0.4)" : "oklch(0.62 0.22 15 / 0.4)"}`,
+                                        }}
+                                      >
+                                        <p
+                                          className="text-base font-bold font-display"
+                                          style={{
+                                            color: isCorrect
+                                              ? "oklch(0.75 0.2 140)"
+                                              : "oklch(0.75 0.22 15)",
+                                          }}
+                                        >
+                                          {isCorrect
+                                            ? `+${CORRECT_REWARD} 🪙 Correct!`
+                                            : `Lost ${GUESS_COST} 🪙 Wrong!`}
+                                        </p>
+                                      </motion.div>
+                                    )}
+                                  </AnimatePresence>
+                                </>
+                              )}
+                            </motion.div>
+                          );
+                        })}
+                    </div>
                   </motion.div>
                 )}
               </AnimatePresence>
             </div>
+          ))}
+        </div>
+      )}
 
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              {event.options.map((opt, optIdx) => {
-                const isSelected = card.selected === opt;
-                const isDisabled = !isIdle;
-                let bgColor = "oklch(0.2 0.04 255)";
-                let borderColor = "oklch(0.3 0.04 255)";
-                let textColor = "oklch(0.7 0.05 255)";
-                let shadow = "none";
+      {/* Tap hint */}
+      {liveMatches.length > 0 && !selectedMatchId && (
+        <p
+          className="text-center text-xs"
+          style={{ color: "oklch(0.5 0.05 255)" }}
+        >
+          Tap a match to open guess questions
+        </p>
+      )}
 
-                if (isSelected && isIdle) {
-                  bgColor = "oklch(0.62 0.18 230 / 0.2)";
-                  borderColor = "oklch(0.65 0.18 230)";
-                  textColor = "oklch(0.88 0.12 230)";
-                  shadow = "0 0 10px oklch(0.65 0.18 230 / 0.35)";
-                } else if (isSelected && isLocked) {
-                  bgColor = "oklch(0.72 0.18 50 / 0.15)";
-                  borderColor = "oklch(0.72 0.18 50 / 0.6)";
-                  textColor = "oklch(0.88 0.16 60)";
-                  shadow = "0 0 10px oklch(0.72 0.18 50 / 0.3)";
-                } else if (isSelected && isResolved) {
-                  if (isCorrect) {
-                    bgColor = "oklch(0.62 0.2 140 / 0.2)";
-                    borderColor = "oklch(0.62 0.2 140)";
-                    textColor = "oklch(0.78 0.16 140)";
-                    shadow = "0 0 10px oklch(0.62 0.2 140 / 0.4)";
-                  } else {
-                    bgColor = "oklch(0.62 0.22 15 / 0.2)";
-                    borderColor = "oklch(0.62 0.22 15)";
-                    textColor = "oklch(0.78 0.18 15)";
-                    shadow = "0 0 10px oklch(0.62 0.22 15 / 0.4)";
-                  }
-                }
-
-                return (
-                  <button
-                    key={opt}
-                    type="button"
-                    data-ocid={`live_match.guess.button.${optIdx + 1}`}
-                    onClick={() => selectOption(event.id, opt)}
-                    disabled={isDisabled}
-                    className="text-left text-sm px-3 py-2.5 rounded-xl transition-all duration-200 font-semibold"
-                    style={{
-                      background: bgColor,
-                      border: `1px solid ${borderColor}`,
-                      color: textColor,
-                      boxShadow: shadow,
-                      opacity: isDisabled && !isSelected ? 0.45 : 1,
-                      cursor: isDisabled ? "default" : "pointer",
-                    }}
-                  >
-                    <span
-                      className="text-xs font-bold mr-1"
-                      style={{ color: "oklch(0.55 0.06 255)" }}
-                    >
-                      {String.fromCharCode(65 + optIdx)}.
-                    </span>
-                    {opt}
-                  </button>
-                );
-              })}
-            </div>
-
-            <AnimatePresence mode="wait">
-              {isIdle && (
-                <motion.button
-                  key="cta-guess"
-                  data-ocid={`live_match.guess.submit_button.${idx + 1}`}
-                  type="button"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  onClick={() => lockGuess(event.id)}
-                  whileTap={{ scale: 0.97 }}
-                  className="w-full py-3 rounded-xl font-display font-bold text-sm transition-all"
-                  style={{
-                    background:
-                      "linear-gradient(135deg, oklch(0.72 0.18 50), oklch(0.76 0.2 40))",
-                    color: "oklch(0.12 0.02 50)",
-                    boxShadow: "0 4px 16px oklch(0.72 0.18 50 / 0.35)",
-                  }}
-                >
-                  Guess · {GUESS_COST} 🪙
-                </motion.button>
-              )}
-              {isLocked && (
-                <motion.div
-                  key="cta-locked"
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="w-full py-3 rounded-xl text-center"
-                  style={{
-                    background: "oklch(0.72 0.18 50 / 0.08)",
-                    border: "1px solid oklch(0.72 0.18 50 / 0.25)",
-                  }}
-                >
-                  <p
-                    className="text-sm font-bold"
-                    style={{ color: "oklch(0.82 0.14 60)" }}
-                  >
-                    ⏳ Awaiting Result...
-                  </p>
-                  <p
-                    className="text-xs mt-0.5"
-                    style={{ color: "oklch(0.6 0.08 255)" }}
-                  >
-                    Locked in: {card.selected}
-                  </p>
-                </motion.div>
-              )}
-              {isResolved && (
-                <motion.div
-                  key="cta-resolved"
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="w-full py-3 rounded-xl text-center"
-                  style={{
-                    background: isCorrect
-                      ? "oklch(0.62 0.2 140 / 0.12)"
-                      : "oklch(0.62 0.22 15 / 0.12)",
-                    border: `1px solid ${isCorrect ? "oklch(0.62 0.2 140 / 0.4)" : "oklch(0.62 0.22 15 / 0.4)"}`,
-                  }}
-                >
-                  <p
-                    className="text-base font-bold font-display"
-                    style={{
-                      color: isCorrect
-                        ? "oklch(0.75 0.2 140)"
-                        : "oklch(0.75 0.22 15)",
-                    }}
-                  >
-                    {isCorrect
-                      ? `+${CORRECT_REWARD} 🪙 Correct!`
-                      : `Lost ${GUESS_COST} 🪙 Wrong!`}
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-        );
-      })}
-
+      {/* Disclaimer */}
       <p
-        className="text-center text-xs pb-2"
-        style={{ color: "oklch(0.5 0.05 255)" }}
+        className="text-center text-xs px-4 pb-2"
+        style={{ color: "oklch(0.45 0.04 255)" }}
       >
-        Entry: {GUESS_COST} 🪙 · Correct reward: {CORRECT_REWARD} 🪙
+        ⚠️ This app is for entertainment only and not affiliated with any
+        official cricket board.
       </p>
     </div>
   );
