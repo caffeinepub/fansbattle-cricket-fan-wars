@@ -1,13 +1,39 @@
 import { Badge } from "@/components/ui/badge";
 import { useUser } from "@/context/UserContext";
-import {
-  type LiveMatch as LiveMatchData,
-  fetchLiveMatches,
-} from "@/lib/cricketApi";
+import { type ApiMatch, fetchMatchesWithCache } from "@/lib/cricketApi";
 import { getUserGuess, storeGuess } from "@/lib/firestore";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+
+// Keep old LiveMatchData shape for backward-compat within this file
+type LiveMatchData = {
+  id: string;
+  teamA: string;
+  teamB: string;
+  scoreA: string;
+  oversA: string;
+  scoreB: string;
+  oversB: string;
+  status: string;
+  event: string;
+};
+
+function toLocalMatch(m: ApiMatch): LiveMatchData {
+  const s0 = m.score?.[0];
+  const s1 = m.score?.[1];
+  return {
+    id: m.id,
+    teamA: m.teams?.[0] ?? "Team A",
+    teamB: m.teams?.[1] ?? "Team B",
+    scoreA: s0 ? `${s0.r}/${s0.w}` : "Yet to bat",
+    oversA: s0 ? `${s0.o}` : "0",
+    scoreB: s1 ? `${s1.r}/${s1.w}` : "Yet to bat",
+    oversB: s1 ? `${s1.o}` : "0",
+    status: m.status,
+    event: m.name,
+  };
+}
 
 interface Props {
   addCoins: (n: number, type: string) => Promise<void>;
@@ -18,7 +44,6 @@ interface Props {
 const GUESS_COST = 10;
 const CORRECT_REWARD = 25;
 
-// Generic questions that work for any match — options filled in dynamically
 const GENERIC_QUESTIONS = [
   {
     id: "q_winner",
@@ -96,7 +121,6 @@ function MatchCard({
           : undefined,
       }}
     >
-      {/* Top bar */}
       <div
         className="px-4 py-2 flex items-center justify-between"
         style={{
@@ -125,7 +149,6 @@ function MatchCard({
         </span>
       </div>
 
-      {/* Score section */}
       <div className="p-4">
         <div className="flex items-center justify-between">
           <div className="text-center flex-1">
@@ -193,25 +216,27 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
   const [fetchError, setFetchError] = useState(false);
   const [loadingMatches, setLoadingMatches] = useState(true);
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
-
-  // Per-match guess state: { [matchId]: { [questionId]: CardData } }
   const [guessState, setGuessState] = useState<
     Record<string, Record<string, CardData>>
   >({});
-  // Already-guessed (from Firestore): { [matchId+questionId]: choice }
   const [existingGuesses, setExistingGuesses] = useState<
     Record<string, string>
   >({});
   const [loadingGuesses, setLoadingGuesses] = useState(false);
-
   const intervals = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
-  const loadMatches = useCallback(async () => {
+  const loadMatches = useCallback(async (force = false) => {
     try {
-      setLoadingMatches(true);
-      const matches = await fetchLiveMatches();
-      setLiveMatches(matches);
-      setFetchError(false);
+      const result = await fetchMatchesWithCache(force);
+      if (result.ok) {
+        const live = result.matches.filter(
+          (m) => m.matchStarted && !m.matchEnded,
+        );
+        setLiveMatches(live.map(toLocalMatch));
+        setFetchError(false);
+      } else {
+        setFetchError(true);
+      }
     } catch {
       setFetchError(true);
     } finally {
@@ -221,7 +246,7 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
 
   useEffect(() => {
     loadMatches();
-    const interval = setInterval(loadMatches, 15000);
+    const interval = setInterval(() => loadMatches(false), 10 * 60 * 1000);
     return () => clearInterval(interval);
   }, [loadMatches]);
 
@@ -232,7 +257,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
     };
   }, []);
 
-  // Load existing guesses from Firestore when a match is selected
   const handleSelectMatch = useCallback(
     async (matchId: string) => {
       if (selectedMatchId === matchId) {
@@ -241,7 +265,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
       }
       setSelectedMatchId(matchId);
       if (!userId) return;
-
       setLoadingGuesses(true);
       const results: Record<string, string> = {};
       await Promise.all(
@@ -260,16 +283,13 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
     matchId: string,
     questionId: string,
     timer: number,
-  ): CardData => {
-    return (
-      guessState[matchId]?.[questionId] ?? {
-        state: "idle",
-        selected: null,
-        timeLeft: timer,
-        isCorrect: null,
-      }
-    );
-  };
+  ): CardData =>
+    guessState[matchId]?.[questionId] ?? {
+      state: "idle",
+      selected: null,
+      timeLeft: timer,
+      isCorrect: null,
+    };
 
   const setCard = (
     matchId: string,
@@ -316,18 +336,13 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
       toast.error("Please log in first");
       return;
     }
-
-    // Check Firestore for duplicate
     const existing = existingGuesses[`${matchId}__${question.id}`];
     if (existing) {
       toast.info(`Already guessed: ${existing}`);
       return;
     }
-
     const ok = await spendCoins(GUESS_COST, "guess_entry");
     if (!ok) return;
-
-    // Store in Firestore
     try {
       await storeGuess(userId, matchId, question.id, card.selected);
       setExistingGuesses((prev) => ({
@@ -338,14 +353,12 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
       toast.error("Failed to store guess");
       return;
     }
-
     setCard(matchId, question.id, (c) => ({
       ...c,
       state: "locked",
       timeLeft: question.timer,
     }));
-    void match; // match data available if needed
-
+    void match;
     let remaining = question.timer;
     const key = `${matchId}__${question.id}`;
     const interval = setInterval(async () => {
@@ -354,7 +367,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
       if (remaining <= 0) {
         clearInterval(interval);
         delete intervals.current[key];
-        // Resolution: random for now (no outcome API available)
         const correct = Math.random() < 0.5;
         if (correct) await addCoins(CORRECT_REWARD, "correct_guess");
         setCard(matchId, question.id, (c) => ({
@@ -379,7 +391,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
 
   return (
     <div className="px-4 py-4 space-y-4 pb-24">
-      {/* Section header */}
       <div className="flex items-center justify-between">
         <h2
           className="font-display text-lg font-bold"
@@ -399,12 +410,8 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
         </Badge>
       </div>
 
-      {/* Loading state */}
       {loadingMatches && liveMatches.length === 0 && (
-        <div
-          data-ocid="live_match.loading_state"
-          className="card-glass rounded-2xl p-8 flex flex-col items-center gap-3"
-        >
+        <div className="card-glass rounded-2xl p-8 flex flex-col items-center gap-3">
           <div className="animate-spin text-4xl">🏏</div>
           <p className="text-sm" style={{ color: "oklch(0.6 0.05 255)" }}>
             Loading live matches...
@@ -412,12 +419,8 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
         </div>
       )}
 
-      {/* Error state */}
       {fetchError && liveMatches.length === 0 && (
-        <div
-          data-ocid="live_match.error_state"
-          className="card-glass rounded-2xl p-6 text-center"
-        >
+        <div className="card-glass rounded-2xl p-6 text-center">
           <div className="text-4xl mb-3">📡</div>
           <p className="font-bold" style={{ color: "oklch(0.92 0.04 255)" }}>
             Could not load live matches
@@ -427,8 +430,7 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
           </p>
           <button
             type="button"
-            onClick={loadMatches}
-            data-ocid="live_match.retry_button"
+            onClick={() => loadMatches(true)}
             className="mt-4 px-4 py-2 rounded-xl text-sm font-bold transition-opacity hover:opacity-80"
             style={{
               background: "oklch(0.65 0.18 220 / 0.2)",
@@ -441,12 +443,8 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
         </div>
       )}
 
-      {/* No live matches */}
       {!loadingMatches && liveMatches.length === 0 && !fetchError && (
-        <div
-          data-ocid="live_match.empty_state"
-          className="card-glass rounded-2xl p-6 text-center"
-        >
+        <div className="card-glass rounded-2xl p-6 text-center">
           <div className="text-4xl mb-3">🏟️</div>
           <p className="font-bold" style={{ color: "oklch(0.92 0.04 255)" }}>
             No live matches currently
@@ -454,13 +452,9 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
           <p className="text-sm mt-1" style={{ color: "oklch(0.6 0.05 255)" }}>
             Check back soon for live action!
           </p>
-          <p className="text-xs mt-3" style={{ color: "oklch(0.45 0.04 255)" }}>
-            Auto-refreshing every 15 seconds
-          </p>
         </div>
       )}
 
-      {/* Live matches list */}
       {liveMatches.length > 0 && (
         <div className="space-y-3">
           {liveMatches.map((match) => (
@@ -470,8 +464,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
                 isSelected={selectedMatchId === match.id}
                 onTap={() => handleSelectMatch(match.id)}
               />
-
-              {/* Inline guess panel for selected match */}
               <AnimatePresence>
                 {selectedMatchId === match.id && (
                   <motion.div
@@ -482,7 +474,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
                     className="overflow-hidden"
                   >
                     <div className="pt-3 space-y-3">
-                      {/* Match Detail Header */}
                       <div
                         className="card-glass rounded-2xl px-4 py-3"
                         style={{
@@ -530,13 +521,10 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
                           const isLocked = card.state === "locked";
                           const isResolved = card.state === "resolved";
                           const isCorrect = card.isCorrect;
-
-                          // Build options: for "teams" type, use actual team names
                           const options =
                             question.type === "teams"
                               ? [match.teamA, match.teamB]
                               : (question.options ?? []);
-
                           const glowStyle = isResolved
                             ? isCorrect
                               ? {
@@ -552,7 +540,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
                           return (
                             <motion.div
                               key={question.id}
-                              data-ocid={`live_match.guess.card.${idx + 1}`}
                               initial={{ opacity: 0, y: 16 }}
                               animate={{ opacity: 1, y: 0 }}
                               transition={{ delay: idx * 0.06 }}
@@ -608,7 +595,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
                                 </div>
                               </div>
 
-                              {/* Already guessed from Firestore */}
                               {alreadyGuessed && (
                                 <div
                                   className="rounded-xl px-3 py-2.5 text-sm text-center font-semibold"
@@ -624,7 +610,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
                                 </div>
                               )}
 
-                              {/* Option buttons */}
                               {!alreadyGuessed && (
                                 <>
                                   <div className="grid grid-cols-2 gap-2 mb-3">
@@ -635,7 +620,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
                                       let borderColor = "oklch(0.3 0.04 255)";
                                       let textColor = "oklch(0.7 0.05 255)";
                                       let shadow = "none";
-
                                       if (isSelected && isIdle) {
                                         bgColor = "oklch(0.62 0.18 230 / 0.2)";
                                         borderColor = "oklch(0.65 0.18 230)";
@@ -660,12 +644,10 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
                                           textColor = "oklch(0.78 0.18 15)";
                                         }
                                       }
-
                                       return (
                                         <button
                                           key={opt}
                                           type="button"
-                                          data-ocid={`live_match.guess.button.${optIdx + 1}`}
                                           onClick={() =>
                                             selectOption(
                                               match.id,
@@ -708,7 +690,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
                                     {isIdle && (
                                       <motion.button
                                         key="cta-guess"
-                                        data-ocid={`live_match.guess.submit_button.${idx + 1}`}
                                         type="button"
                                         initial={{ opacity: 0, y: 8 }}
                                         animate={{ opacity: 1, y: 0 }}
@@ -802,7 +783,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
         </div>
       )}
 
-      {/* Tap hint */}
       {liveMatches.length > 0 && !selectedMatchId && (
         <p
           className="text-center text-xs"
@@ -812,7 +792,6 @@ export default function LiveMatch({ addCoins, spendCoins, onGameEnd }: Props) {
         </p>
       )}
 
-      {/* Disclaimer */}
       <p
         className="text-center text-xs px-4 pb-2"
         style={{ color: "oklch(0.45 0.04 255)" }}

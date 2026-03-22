@@ -1,58 +1,21 @@
 import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ApiMatch,
+  fetchMatchesWithCache,
+  getCacheAge,
+  isCacheValid,
+} from "../../lib/cricketApi";
 
-const API_KEY = "4936fea0-ba32-4484-81de-8ca82f6501f6";
-const REFRESH_INTERVAL = 300000; // 5 minutes — avoids exhausting free-tier quota
+// ─── Auto-refresh every 10 minutes to protect paid API quota ──────────────────
+const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 
-export interface ApiScore {
-  r: number;
-  w: number;
-  o: number;
-  inning: string;
-}
+export type { ApiMatch };
+export type { ApiScore } from "../../lib/cricketApi";
 
-export interface ApiMatch {
-  id: string;
-  name: string;
-  status: string;
-  venue?: string;
-  teams: string[];
-  score?: ApiScore[];
-  matchStarted: boolean;
-  matchEnded: boolean;
-  dateTimeGMT?: string;
-}
-
-interface ApiResponse {
-  data: ApiMatch[];
-  status: string;
-  message?: string;
-  info?: unknown;
-  error?: string;
-}
-
-function resolveApiErrorMessage(json: ApiResponse): string {
-  const raw = (json.message ?? json.error ?? "").toLowerCase();
-  if (
-    raw.includes("quota") ||
-    raw.includes("limit") ||
-    raw.includes("exceed")
-  ) {
-    return "API quota exceeded. The daily limit for this CricAPI key has been reached. Matches will load again after midnight.";
-  }
-  if (
-    raw.includes("invalid") ||
-    raw.includes("key") ||
-    raw.includes("auth") ||
-    raw.includes("unauthorized")
-  ) {
-    return "Invalid API key. Please verify the key is active at cricapi.com.";
-  }
-  const display = json.message ?? json.error ?? json.status ?? "Unknown error";
-  return `API error: ${display}`;
-}
-
-function formatScore(score?: ApiScore[]): { a: string; b: string } {
+function formatScore(
+  score?: Array<{ r: number; w: number; o: number; inning: string }>,
+): { a: string; b: string } {
   if (!score || score.length === 0) return { a: "Yet to bat", b: "Yet to bat" };
   const a = score[0]
     ? `${score[0].r}/${score[0].w} (${score[0].o} ov)`
@@ -177,106 +140,63 @@ interface Props {
 export default function HomeTab({ onMatchSelect }: Props) {
   const [matches, setMatches] = useState<ApiMatch[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isQuotaError, setIsQuotaError] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
+  const [fromCache, setFromCache] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchMatches = useCallback(async () => {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-      let res: Response;
-      try {
-        res = await fetch(
-          `https://api.cricapi.com/v1/currentMatches?apikey=${API_KEY}&offset=0`,
-          { signal: controller.signal },
-        );
-      } catch (fetchErr) {
-        const msg =
-          fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-        const isCors =
-          msg.toLowerCase().includes("cors") ||
-          msg.toLowerCase().includes("failed to fetch") ||
-          msg.toLowerCase().includes("network");
-        setError(
-          isCors
-            ? "CORS or network error — API blocked by browser. Check your connection."
-            : `Network error: ${msg}`,
-        );
-        setIsQuotaError(false);
-        setLoading(false);
-        return;
-      }
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        setError(`HTTP error ${res.status}`);
-        setIsQuotaError(false);
-        setLoading(false);
-        return;
-      }
-
-      const json: ApiResponse = await res.json();
-
-      // ── Explicit failure status — parse and display the real message ──
-      if (json.status === "failure") {
-        const msg = resolveApiErrorMessage(json);
-        const isQuota =
-          msg.toLowerCase().includes("quota") ||
-          msg.toLowerCase().includes("midnight");
-        setError(msg);
-        setIsQuotaError(isQuota);
-        setLoading(false);
-        return;
-      }
-
-      // ── Accept both "success" and "ok" ──
-      const knownSuccess = ["success", "ok"].includes(
-        (json.status ?? "").toLowerCase(),
-      );
-      if (!knownSuccess && !json.data) {
-        setError(`API returned status: ${json.status}`);
-        setIsQuotaError(false);
-        setLoading(false);
-        return;
-      }
-
-      if (!json.data || !Array.isArray(json.data)) {
-        setMatches([]);
-        setError(null);
-        setIsQuotaError(false);
-        setLastUpdated(new Date().toLocaleTimeString());
-        setLoading(false);
-        return;
-      }
-
-      const all = json.data.filter((m) => !m.matchEnded);
-      setMatches(all);
+  const loadMatches = useCallback(async (force = false) => {
+    const result = await fetchMatchesWithCache(force);
+    if (result.ok) {
+      setMatches(result.matches);
       setError(null);
       setIsQuotaError(false);
-      setLastUpdated(new Date().toLocaleTimeString());
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (err instanceof Error && err.name === "AbortError") {
-        setError("Request timed out. Check your connection.");
-      } else {
-        setError(`Error: ${msg}`);
-      }
-      setIsQuotaError(false);
-    } finally {
-      setLoading(false);
+      setFetchedAt(result.fetchedAt);
+      setFromCache(result.fromCache);
+    } else {
+      // On error, keep any previously loaded matches visible
+      setError(result.errorMessage);
+      setIsQuotaError(result.isQuota);
     }
   }, []);
 
+  // Initial load
   useEffect(() => {
-    fetchMatches();
-    const interval = setInterval(fetchMatches, REFRESH_INTERVAL);
-    return () => clearInterval(interval);
-  }, [fetchMatches]);
+    loadMatches(false).finally(() => setLoading(false));
+  }, [loadMatches]);
+
+  // Auto-refresh every 10 minutes (respects cache — only hits API if cache expired)
+  useEffect(() => {
+    intervalRef.current = setInterval(
+      () => loadMatches(false),
+      REFRESH_INTERVAL_MS,
+    );
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [loadMatches]);
+
+  const handleManualRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    await loadMatches(true); // force bypass cache
+    setRefreshing(false);
+  }, [loadMatches, refreshing]);
 
   const liveMatches = matches.filter((m) => m.matchStarted && !m.matchEnded);
   const upcomingMatches = matches.filter((m) => !m.matchStarted);
+
+  const cacheAgeSeconds = fetchedAt
+    ? Math.floor((Date.now() - fetchedAt) / 1000)
+    : null;
+  const cacheLabel =
+    cacheAgeSeconds !== null
+      ? cacheAgeSeconds < 60
+        ? `Updated ${cacheAgeSeconds}s ago${fromCache ? " (cached)" : ""}`
+        : `Updated ${Math.floor(cacheAgeSeconds / 60)}m ago${fromCache ? " (cached)" : ""}`
+      : null;
 
   if (loading) {
     return (
@@ -303,7 +223,7 @@ export default function HomeTab({ onMatchSelect }: Props) {
         animate={{ opacity: 1 }}
         className="py-4 space-y-4"
       >
-        {/* ── Live Matches ─────────────────────────────────────────── */}
+        {/* ── Live Matches ──────────────────────────────────────────────────── */}
         <section data-ocid="home.live_matches.section">
           <div className="flex items-center gap-2 mb-3 px-4">
             <span className="relative flex h-2.5 w-2.5">
@@ -349,36 +269,32 @@ export default function HomeTab({ onMatchSelect }: Props) {
                 >
                   {error}
                 </p>
-                {!isQuotaError && (
-                  <a
-                    href="https://cricapi.com"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-block text-xs font-bold px-4 py-1.5 rounded-full mb-2"
-                    style={{
-                      background: "oklch(0.55 0.15 220 / 0.2)",
-                      color: "oklch(0.7 0.12 220)",
-                      border: "1px solid oklch(0.55 0.15 220 / 0.4)",
-                    }}
+                {isQuotaError && (
+                  <p
+                    className="text-xs mb-3"
+                    style={{ color: "oklch(0.55 0.06 255)" }}
                   >
-                    Check cricapi.com
-                  </a>
+                    Your quota resets at midnight. Cached data will be shown
+                    when available.
+                  </p>
                 )}
-                <div>
-                  <button
-                    type="button"
-                    data-ocid="home.retry.button"
-                    onClick={fetchMatches}
-                    className="text-xs font-bold px-4 py-2 rounded-full transition-all"
-                    style={{
-                      background: "oklch(0.65 0.18 220 / 0.2)",
-                      color: "oklch(0.75 0.12 220)",
-                      border: "1px solid oklch(0.65 0.18 220 / 0.4)",
-                    }}
-                  >
-                    Retry
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  data-ocid="home.retry.button"
+                  onClick={handleManualRefresh}
+                  disabled={refreshing}
+                  className="text-xs font-bold px-4 py-2 rounded-full transition-all"
+                  style={{
+                    background: "oklch(0.65 0.18 220 / 0.2)",
+                    color: refreshing
+                      ? "oklch(0.5 0.06 255)"
+                      : "oklch(0.75 0.12 220)",
+                    border: "1px solid oklch(0.65 0.18 220 / 0.4)",
+                    cursor: refreshing ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {refreshing ? "Refreshing..." : "Retry"}
+                </button>
               </div>
             </div>
           ) : liveMatches.length === 0 ? (
@@ -433,7 +349,7 @@ export default function HomeTab({ onMatchSelect }: Props) {
           )}
         </section>
 
-        {/* ── Upcoming Matches ─────────────────────────────────────── */}
+        {/* ── Upcoming Matches ──────────────────────────────────────────────── */}
         {!error && (
           <section data-ocid="home.upcoming_matches.section">
             <div className="flex items-center gap-2 mb-3 px-4">
@@ -506,9 +422,9 @@ export default function HomeTab({ onMatchSelect }: Props) {
           </section>
         )}
 
-        {/* Footer */}
-        <div className="text-center pb-2 px-4 space-y-1">
-          {lastUpdated && (
+        {/* ── Footer: cache status + manual refresh ─────────────────────────── */}
+        <div className="text-center pb-2 px-4 space-y-2">
+          {cacheLabel && (
             <p
               className="text-[10px] font-semibold px-3 py-1 rounded-full inline-block"
               style={{
@@ -516,17 +432,30 @@ export default function HomeTab({ onMatchSelect }: Props) {
                 color: "oklch(0.6 0.12 150)",
               }}
             >
-              Updated at {lastUpdated} · auto-refreshes every 5 min
+              {cacheLabel} · auto-refreshes every 10 min
             </p>
           )}
-          <button
-            type="button"
-            onClick={fetchMatches}
-            className="block mx-auto text-xs mt-2"
-            style={{ color: "oklch(0.55 0.08 255)" }}
-          >
-            Tap to refresh
-          </button>
+          <div>
+            <button
+              type="button"
+              data-ocid="home.manual_refresh.button"
+              onClick={handleManualRefresh}
+              disabled={refreshing}
+              className="text-xs font-semibold px-4 py-1.5 rounded-full transition-all"
+              style={{
+                background: refreshing
+                  ? "oklch(0.2 0.03 255)"
+                  : "oklch(0.65 0.18 220 / 0.15)",
+                color: refreshing
+                  ? "oklch(0.5 0.06 255)"
+                  : "oklch(0.7 0.14 220)",
+                border: "1px solid oklch(0.65 0.18 220 / 0.3)",
+                cursor: refreshing ? "not-allowed" : "pointer",
+              }}
+            >
+              {refreshing ? "Refreshing..." : "↻ Refresh Now"}
+            </button>
+          </div>
         </div>
       </motion.div>
     </AnimatePresence>
