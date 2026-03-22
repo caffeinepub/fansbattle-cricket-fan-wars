@@ -1,23 +1,30 @@
+import AdminPanel from "@/components/AdminPanel";
 import BottomNav from "@/components/BottomNav";
+import ContestListScreen from "@/components/ContestListScreen";
+import ContestQuestionScreen from "@/components/ContestQuestionScreen";
 import Header from "@/components/Header";
 import LoginScreen from "@/components/LoginScreen";
-import ShopModal from "@/components/ShopModal";
+import ShopPage from "@/components/ShopPage";
 import SplashScreen from "@/components/SplashScreen";
 import HomeTab from "@/components/tabs/HomeTab";
+import type { ApiMatch } from "@/components/tabs/HomeTab";
 import ProfileTab from "@/components/tabs/ProfileTab";
 import { Toaster } from "@/components/ui/sonner";
 import { UserContextProvider, useUser } from "@/context/UserContext";
+import type { Contest } from "@/lib/firestore";
 import { useEffect, useState } from "react";
 
-export type TabId = "home" | "profile";
-
+export type TabId = "home" | "profile" | "admin";
+type Screen = "main" | "shop" | "contestList" | "contestQuestions";
 type AppState = "splash" | "loading" | "login" | "main";
 
 function AppInner() {
-  const { deviceId, loading } = useUser();
+  const { deviceId, loading, isAdmin } = useUser();
   const [appState, setAppState] = useState<AppState>("splash");
   const [activeTab, setActiveTab] = useState<TabId>("home");
-  const [showShop, setShowShop] = useState(false);
+  const [screen, setScreen] = useState<Screen>("main");
+  const [selectedMatch, setSelectedMatch] = useState<ApiMatch | null>(null);
+  const [selectedContest, setSelectedContest] = useState<Contest | null>(null);
 
   const handleSplashComplete = () => {
     if (loading) {
@@ -72,23 +79,75 @@ function AppInner() {
     );
   }
 
+  // Full-screen shop page
+  if (screen === "shop") {
+    return (
+      <>
+        <ShopPage onBack={() => setScreen("main")} />
+        <Toaster position="top-center" richColors />
+      </>
+    );
+  }
+
+  // Contest list for a match
+  if (screen === "contestList" && selectedMatch) {
+    return (
+      <>
+        <ContestListScreen
+          match={selectedMatch}
+          onBack={() => setScreen("main")}
+          onJoinContest={(contest) => {
+            setSelectedContest(contest);
+            setScreen("contestQuestions");
+          }}
+        />
+        <Toaster position="top-center" richColors />
+      </>
+    );
+  }
+
+  // Contest question screen
+  if (screen === "contestQuestions" && selectedMatch && selectedContest) {
+    return (
+      <>
+        <ContestQuestionScreen
+          match={selectedMatch}
+          contest={selectedContest}
+          onBack={() => setScreen("contestList")}
+        />
+        <Toaster position="top-center" richColors />
+      </>
+    );
+  }
+
+  // Main screen
   return (
     <div className="app-shell stadium-gradient flex flex-col">
-      <Header onCoinClick={() => setShowShop(true)} />
+      <Header onCoinClick={() => setScreen("shop")} />
 
       <main
         className="flex-1 overflow-y-auto pb-20"
         style={{ paddingTop: "64px" }}
       >
-        {activeTab === "home" && <HomeTab />}
-        {activeTab === "profile" && (
-          <ProfileTab onOpenShop={() => setShowShop(true)} />
+        {activeTab === "home" && (
+          <HomeTab
+            onMatchSelect={(match) => {
+              setSelectedMatch(match);
+              setScreen("contestList");
+            }}
+          />
         )}
+        {activeTab === "profile" && (
+          <ProfileTab onOpenShop={() => setScreen("shop")} />
+        )}
+        {activeTab === "admin" && isAdmin && <AdminPanel />}
       </main>
 
-      <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
-
-      <ShopModal open={showShop} onClose={() => setShowShop(false)} />
+      <BottomNav
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        isAdmin={isAdmin}
+      />
 
       <Toaster position="top-center" richColors />
     </div>

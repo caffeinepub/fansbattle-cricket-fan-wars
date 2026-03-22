@@ -3,14 +3,25 @@ import type { TabId } from "@/App";
 interface Props {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
+  isAdmin?: boolean;
 }
 
-const NAV_ITEMS: { id: TabId; label: string; icon: string; ocid: string }[] = [
-  { id: "home", label: "Home", icon: "🏠", ocid: "nav.home.tab" },
-  { id: "profile", label: "Profile", icon: "👤", ocid: "nav.profile.tab" },
-];
+export default function BottomNav({ activeTab, onTabChange, isAdmin }: Props) {
+  const items: { id: TabId; label: string; icon: string; ocid: string }[] = [
+    { id: "home", label: "Home", icon: "🏠", ocid: "nav.home.tab" },
+    { id: "profile", label: "Profile", icon: "👤", ocid: "nav.profile.tab" },
+    ...(isAdmin
+      ? [
+          {
+            id: "admin" as TabId,
+            label: "Admin",
+            icon: "🛡️",
+            ocid: "nav.admin.tab",
+          },
+        ]
+      : []),
+  ];
 
-export default function BottomNav({ activeTab, onTabChange }: Props) {
   return (
     <nav
       className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-40 px-6 py-2"
@@ -21,7 +32,7 @@ export default function BottomNav({ activeTab, onTabChange }: Props) {
       }}
     >
       <div className="flex items-center justify-around">
-        {NAV_ITEMS.map((item) => {
+        {items.map((item) => {
           const isActive = activeTab === item.id;
           return (
             <button
@@ -29,7 +40,7 @@ export default function BottomNav({ activeTab, onTabChange }: Props) {
               key={item.id}
               data-ocid={item.ocid}
               onClick={() => onTabChange(item.id)}
-              className="flex flex-col items-center gap-1 px-8 py-1.5 rounded-2xl transition-all duration-200"
+              className="flex flex-col items-center gap-1 px-6 py-1.5 rounded-2xl transition-all duration-200"
               style={{
                 color: isActive
                   ? "oklch(0.72 0.18 50)"

@@ -160,55 +160,36 @@ export type ClaimResult =
 
 export async function claimDailyReward(deviceId: string): Promise<ClaimResult> {
   const userRef = doc(db, "users", deviceId);
-  const today = getTodayString(); // YYYY-MM-DD
+  const today = getTodayString();
 
   try {
     let coinsAwarded = 0;
     await runTransaction(db, async (transaction) => {
-      // Step 1: Read document
       const snap = await transaction.get(userRef);
-
-      // Step 2a: Document must exist
       if (!snap.exists()) throw new Error("USER_NOT_FOUND");
-
       const data = snap.data() as UserData;
       const currentCoins = data.coins;
-
-      // Step 2b: Check lastClaimDate — block if already claimed today
       if (data.lastClaimDate === today) throw new Error("ALREADY_CLAIMED");
-
-      // Step 2c: Calculate new coins
       const newCoins = currentCoins + DAILY_REWARD_AMOUNT;
       coinsAwarded = DAILY_REWARD_AMOUNT;
-
-      // Step 2d: Atomic update using set+merge (more resilient than update)
       transaction.set(
         userRef,
-        {
-          coins: newCoins,
-          lastClaimDate: today,
-        },
+        { coins: newCoins, lastClaimDate: today },
         { merge: true },
       );
     });
-
-    // Step 3: Only after Firestore success, fire-and-forget transaction log
     addDoc(collection(db, "transactions"), {
       userId: deviceId,
       type: "daily_reward",
       amount: coinsAwarded,
       timestamp: new Date().toISOString(),
     }).catch(() => {});
-
     return { success: true, alreadyClaimed: false, coinsAwarded };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg === "ALREADY_CLAIMED") {
+    if (msg === "ALREADY_CLAIMED")
       return { success: false, alreadyClaimed: true };
-    }
-    // Log actual error for debugging
     console.error("[claimDailyReward] Firestore error:", e);
-    // Any other error (including USER_NOT_FOUND, network issues)
     return {
       success: false,
       alreadyClaimed: false,
@@ -379,4 +360,243 @@ export async function getTransactions(userId: string): Promise<
     id: d.id,
     ...(d.data() as { type: string; amount: number; timestamp: unknown }),
   }));
+}
+
+// ─── Contest System ───────────────────────────────────────────────────────────
+
+export interface ContestQuestion {
+  id: string;
+  text: string;
+  options: string[];
+}
+
+export interface Contest {
+  id: string;
+  matchId: string;
+  name: string;
+  type: "mini" | "mega" | "h2h";
+  entryFee: number;
+  totalSpots: number;
+  joinedUsers: string[];
+  prizePool: number;
+  winnersCount: number;
+  status: "open" | "locked" | "completed";
+  isLive: boolean;
+  countdown: number;
+  questions: ContestQuestion[];
+  createdAt: string;
+}
+
+export interface ContestEntry {
+  id: string;
+  contestId: string;
+  matchId: string;
+  userId: string;
+  answers: Record<string, string>;
+  joinedAt: string;
+  submitted: boolean;
+}
+
+export async function getContestsForMatch(
+  matchId: string,
+  team1: string,
+  team2: string,
+  isMatchLive = false,
+): Promise<Contest[]> {
+  const contestsRef = collection(db, "contests");
+  const q = query(contestsRef, where("matchId", "==", matchId));
+  const snap = await getDocs(q);
+
+  if (!snap.empty) {
+    return snap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<Contest, "id">),
+    }));
+  }
+
+  // Create default contests
+  const now = new Date().toISOString();
+  const baseQuestion: ContestQuestion = {
+    id: "q1",
+    text: "Who will win this match?",
+    options: [team1, team2],
+  };
+
+  const defaults: Omit<Contest, "id">[] = [
+    {
+      matchId,
+      name: "Mini Contest",
+      type: "mini",
+      entryFee: 10,
+      totalSpots: 100,
+      joinedUsers: [],
+      prizePool: 0,
+      winnersCount: 30,
+      status: "open",
+      isLive: false,
+      countdown: 0,
+      questions: [baseQuestion],
+      createdAt: now,
+    },
+    {
+      matchId,
+      name: "Mega Contest",
+      type: "mega",
+      entryFee: 20,
+      totalSpots: 500,
+      joinedUsers: [],
+      prizePool: 0,
+      winnersCount: 125,
+      status: "open",
+      isLive: false,
+      countdown: 0,
+      questions: [baseQuestion],
+      createdAt: now,
+    },
+    {
+      matchId,
+      name: "Head-to-Head",
+      type: "h2h",
+      entryFee: 10,
+      totalSpots: 2,
+      joinedUsers: [],
+      prizePool: 0,
+      winnersCount: 1,
+      status: "open",
+      isLive: false,
+      countdown: 0,
+      questions: [baseQuestion],
+      createdAt: now,
+    },
+  ];
+
+  if (isMatchLive) {
+    defaults.push({
+      matchId,
+      name: "Live: Next Over Runs",
+      type: "mini",
+      entryFee: 10,
+      totalSpots: 200,
+      joinedUsers: [],
+      prizePool: 0,
+      winnersCount: 60,
+      status: "open",
+      isLive: true,
+      countdown: 45,
+      questions: [
+        {
+          id: "q1",
+          text: "Runs in next over?",
+          options: ["0–5", "6–10", "11–15", "16+"],
+        },
+      ],
+      createdAt: now,
+    });
+  }
+
+  const created: Contest[] = [];
+  await Promise.all(
+    defaults.map(async (c) => {
+      const ref = doc(contestsRef);
+      await setDoc(ref, c);
+      created.push({ id: ref.id, ...c });
+    }),
+  );
+  return created;
+}
+
+export async function joinContest(
+  deviceId: string,
+  contestId: string,
+  matchId: string,
+  entryFee: number,
+): Promise<{ success: boolean; error?: string }> {
+  const userRef = doc(db, "users", deviceId);
+  const contestRef = doc(db, "contests", contestId);
+  const txRef = doc(
+    db,
+    "transactions",
+    `${deviceId}_${contestId}_${Date.now()}`,
+  );
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const [userSnap, contestSnap] = await Promise.all([
+        transaction.get(userRef),
+        transaction.get(contestRef),
+      ]);
+      if (!userSnap.exists()) throw new Error("USER_NOT_FOUND");
+      if (!contestSnap.exists()) throw new Error("CONTEST_NOT_FOUND");
+
+      const userData = userSnap.data() as UserData;
+      const contestData = contestSnap.data() as Omit<Contest, "id">;
+
+      if (contestData.status !== "open") throw new Error("CONTEST_LOCKED");
+      if (contestData.joinedUsers.includes(deviceId))
+        throw new Error("ALREADY_JOINED");
+      if (userData.coins < entryFee) throw new Error("INSUFFICIENT_COINS");
+
+      const newJoined = [...contestData.joinedUsers, deviceId];
+      const newPrizePool = Math.floor(newJoined.length * entryFee * 0.75);
+
+      transaction.update(userRef, { coins: userData.coins - entryFee });
+      transaction.update(contestRef, {
+        joinedUsers: newJoined,
+        prizePool: newPrizePool,
+      });
+      transaction.set(txRef, {
+        userId: deviceId,
+        type: "contest_entry",
+        amount: -entryFee,
+        contestId,
+        matchId,
+        timestamp: new Date().toISOString(),
+      });
+    });
+    return { success: true };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { success: false, error: msg };
+  }
+}
+
+export async function submitContestAnswers(
+  deviceId: string,
+  contestId: string,
+  matchId: string,
+  answers: Record<string, string>,
+): Promise<{ success: boolean; error?: string }> {
+  const entryId = `${deviceId}_${contestId}`;
+  const entryRef = doc(db, "contestEntries", entryId);
+  try {
+    const snap = await getDoc(entryRef);
+    if (snap.exists() && (snap.data() as ContestEntry).submitted) {
+      throw new Error("ALREADY_SUBMITTED");
+    }
+    await setDoc(entryRef, {
+      contestId,
+      matchId,
+      userId: deviceId,
+      answers,
+      joinedAt: snap.exists()
+        ? (snap.data() as ContestEntry).joinedAt
+        : new Date().toISOString(),
+      submitted: true,
+    });
+    return { success: true };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { success: false, error: msg };
+  }
+}
+
+export async function getContestEntry(
+  deviceId: string,
+  contestId: string,
+): Promise<ContestEntry | null> {
+  const entryId = `${deviceId}_${contestId}`;
+  const entryRef = doc(db, "contestEntries", entryId);
+  const snap = await getDoc(entryRef);
+  if (!snap.exists()) return null;
+  return { id: snap.id, ...(snap.data() as Omit<ContestEntry, "id">) };
 }
