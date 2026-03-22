@@ -2,15 +2,14 @@ import Map "mo:core/Map";
 import Nat "mo:core/Nat";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
-import Array "mo:core/Array";
 import Runtime "mo:core/Runtime";
 import Principal "mo:core/Principal";
 import MixinAuthorization "authorization/MixinAuthorization";
 import AccessControl "authorization/access-control";
 import OutCall "http-outcalls/outcall";
-import Migration "migration";
 
-(with migration = Migration.run)
+
+
 actor {
   // Access control state
   let accessControlState = AccessControl.initState();
@@ -222,29 +221,42 @@ actor {
   var lastApiResponse : Text = "";
   var lastApiCallTime : Time.Time = 0;
 
-  // Fetch current cricket matches from external API (with caching) - authenticated users only
-  public shared ({ caller }) func fetchCricketMatches() : async Text {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
-      Runtime.trap("Unauthorized: Only authenticated users can fetch cricket matches");
-    };
-
+  // Fetch current cricket matches from external API (with caching) - PUBLIC, no auth required
+  public shared func fetchCricketMatches() : async Text {
     let now = Time.now();
-    if (now < (lastApiCallTime + 420_000_000_000)) {
+    // Return cached response if within 7-minute window
+    if (lastApiResponse != "" and now < (lastApiCallTime + 420_000_000_000)) {
       return lastApiResponse;
     };
 
-    // Make the outcall request
     let url = "https://api.cricapi.com/v1/currentMatches?apikey=76e4e258-7898-4311-ace0-4196d49df2b7&offset=0";
-    let response = await OutCall.httpGetRequest(url, [], transform);
 
-    // Store the response
-    lastApiResponse := response;
-    lastApiCallTime := now;
+    try {
+      let response = await OutCall.httpGetRequest(
+        url,
+        [{ name = "Accept"; value = "application/json" }],
+        transform,
+      );
 
-    response;
+      if (response == "") {
+        return "{\"status\":\"failure\",\"message\":\"Empty response from cricket API\"}";
+      };
+
+      lastApiResponse := response;
+      lastApiCallTime := now;
+      response;
+    } catch (e) {
+      // Use dot-notation to get the error message (Motoko new-style API)
+      let errMsg = e.message();
+      // Return cached data as fallback if available
+      if (lastApiResponse != "") {
+        return lastApiResponse;
+      };
+      "{\"status\":\"failure\",\"message\":\"" # errMsg # "\"}";
+    };
   };
 
-  public query ({ caller }) func transform(input : OutCall.TransformationInput) : async OutCall.TransformationOutput {
+  public query func transform(input : OutCall.TransformationInput) : async OutCall.TransformationOutput {
     OutCall.transform(input);
   };
 };

@@ -1,11 +1,12 @@
-// ─── Cricket API via Backend Proxy ───────────────────────────────────────────
-// All CricketData API requests are routed through the Motoko backend canister
-// using HTTP outcalls. The API key never touches the browser.
-import { createActorWithConfig } from "../config";
+// ─── Cricket API — direct frontend call ──────────────────────────────────────
+// Calls CricAPI directly from the browser.
+// API key is only used here; never stored elsewhere in the codebase.
 
-// ─── Cache (in-memory, 8-minute TTL) ─────────────────────────────────────────
-// Prevents multiple renders / manual refreshes from hammering the canister.
-const CACHE_TTL_MS = 8 * 60 * 1000; // 8 minutes
+const CRIC_API_KEY = "76e4e258-7898-4311-ace0-4196d49df2b7";
+const CRIC_API_URL = `https://api.cricapi.com/v1/currentMatches?apikey=${CRIC_API_KEY}&offset=0`;
+
+// ─── Cache (in-memory, 10-minute TTL) ────────────────────────────────────────
+const CACHE_TTL_MS = 10 * 60 * 1000;
 
 interface CacheEntry {
   data: ApiMatch[];
@@ -13,11 +14,6 @@ interface CacheEntry {
 }
 
 let _cache: CacheEntry | null = null;
-
-export function getCacheAge(): number | null {
-  if (!_cache) return null;
-  return Math.floor((Date.now() - _cache.fetchedAt) / 1000);
-}
 
 export function isCacheValid(): boolean {
   return !!_cache && Date.now() - _cache.fetchedAt < CACHE_TTL_MS;
@@ -52,46 +48,88 @@ export interface ApiMatch {
   dateTimeGMT?: string;
 }
 
-interface ApiResponse {
-  data: ApiMatch[];
-  status: string;
-  message?: string;
-  info?: unknown;
-  error?: string;
-}
-
 export type FetchResult =
   | { ok: true; matches: ApiMatch[]; fromCache: boolean; fetchedAt: number }
   | { ok: false; errorMessage: string; isQuota: boolean };
 
-function resolveApiErrorMessage(json: ApiResponse): string {
-  const raw = (json.message ?? json.error ?? "").toLowerCase();
+function classifyError(message: string): {
+  ok: false;
+  errorMessage: string;
+  isQuota: boolean;
+} {
+  const lower = message.toLowerCase();
   if (
-    raw.includes("quota") ||
-    raw.includes("limit") ||
-    raw.includes("exceed")
+    lower.includes("quota") ||
+    lower.includes("limit") ||
+    lower.includes("exceed")
   ) {
-    return "API quota exceeded. The daily limit has been reached. Matches will load again after midnight.";
+    return {
+      ok: false,
+      errorMessage:
+        "API quota exceeded. Matches will load again after midnight.",
+      isQuota: true,
+    };
   }
   if (
-    raw.includes("invalid") ||
-    raw.includes("key") ||
-    raw.includes("auth") ||
-    raw.includes("unauthorized")
+    lower.includes("invalid") ||
+    lower.includes("unauthorized") ||
+    lower.includes("forbidden")
   ) {
-    return "Invalid API key. Please verify the key is active at cricapi.com.";
+    return {
+      ok: false,
+      errorMessage:
+        "Invalid API key. Please verify the key is active at cricapi.com.",
+      isQuota: false,
+    };
   }
-  const display = json.message ?? json.error ?? json.status ?? "Unknown error";
-  return `API error: ${display}`;
+  if (
+    lower.includes("network") ||
+    lower.includes("unreachable") ||
+    lower.includes("timeout") ||
+    lower.includes("failed to fetch")
+  ) {
+    return {
+      ok: false,
+      errorMessage:
+        "Could not connect to cricket data. Check your connection and try again.",
+      isQuota: false,
+    };
+  }
+  return {
+    ok: false,
+    errorMessage: `Match data unavailable: ${message}`,
+    isQuota: false,
+  };
 }
 
-// ─── Main fetch (cache-first, via backend canister) ───────────────────────────
-// fetchMatchesWithCache() is the single entry point for all match data.
-// It never calls CricketData API directly — the canister does that securely.
+function normalizeMatch(item: Record<string, unknown>): ApiMatch {
+  return {
+    id: String(item.id ?? ""),
+    name: String(item.name ?? ""),
+    status: String(item.status ?? ""),
+    venue: item.venue ? String(item.venue) : undefined,
+    teams: Array.isArray(item.teams) ? (item.teams as string[]) : [],
+    score: Array.isArray(item.score)
+      ? (item.score as Array<{
+          r: number;
+          w: number;
+          o: number;
+          inning: string;
+        }>)
+      : [],
+    matchStarted: Boolean(item.matchStarted),
+    matchEnded: Boolean(item.matchEnded),
+    dateTimeGMT: item.dateTimeGMT ? String(item.dateTimeGMT) : undefined,
+  };
+}
+
+// ─── Main fetch ───────────────────────────────────────────────────────────────
+// Called ONLY on app load and when user clicks "Refresh Now".
+// No polling / setInterval anywhere in the app.
 export async function fetchMatchesWithCache(
   forceRefresh = false,
 ): Promise<FetchResult> {
-  // Serve from cache unless forced or stale
+  // Return cache if valid and not forcing refresh
   if (!forceRefresh && isCacheValid()) {
     return {
       ok: true,
@@ -102,37 +140,61 @@ export async function fetchMatchesWithCache(
   }
 
   try {
-    const actor = await createActorWithConfig();
-    const rawJson = await actor.fetchCricketMatches();
+    const response = await fetch(CRIC_API_URL, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(15000),
+    });
 
-    const json: ApiResponse = JSON.parse(rawJson);
-
-    if (json.status === "failure") {
-      const errorMessage = resolveApiErrorMessage(json);
-      const isQuota =
-        errorMessage.toLowerCase().includes("quota") ||
-        errorMessage.toLowerCase().includes("midnight");
-      return { ok: false, errorMessage, isQuota };
+    let parsed: unknown;
+    const text = await response.text();
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return classifyError("Invalid response from server.");
     }
 
-    const knownSuccess = ["success", "ok"].includes(
-      (json.status ?? "").toLowerCase(),
-    );
-    if (!knownSuccess && !json.data) {
+    if (!parsed || typeof parsed !== "object") {
       return {
         ok: false,
-        errorMessage: `Unexpected API response: ${json.status}`,
+        errorMessage: "Unexpected response format.",
         isQuota: false,
       };
     }
 
-    const all = (json.data ?? []).filter((m) => !m.matchEnded);
-    const fetchedAt = Date.now();
-    _cache = { data: all, fetchedAt };
+    const obj = parsed as Record<string, unknown>;
 
-    return { ok: true, matches: all, fromCache: false, fetchedAt };
+    // CricAPI returns { status: "failure", message: ".." } on errors
+    const status = String(obj.status ?? "").toLowerCase();
+    if (status === "failure" || status === "error") {
+      const msg = String(
+        (obj.message as string | undefined) ??
+          (obj.error as string | undefined) ??
+          "Unknown error",
+      );
+      return classifyError(msg);
+    }
+
+    // CricAPI success: { status: "success", data: [...] }
+    if (!Array.isArray(obj.data)) {
+      return {
+        ok: false,
+        errorMessage: "No match data returned by API.",
+        isQuota: false,
+      };
+    }
+
+    const matches: ApiMatch[] = (obj.data as unknown[])
+      .filter((i): i is Record<string, unknown> => !!i && typeof i === "object")
+      .map(normalizeMatch)
+      .filter((m) => !m.matchEnded);
+
+    const fetchedAt = Date.now();
+    _cache = { data: matches, fetchedAt };
+
+    return { ok: true, matches, fromCache: false, fetchedAt };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, errorMessage: `Error: ${msg}`, isQuota: false };
+    return classifyError(msg);
   }
 }

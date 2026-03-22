@@ -7,6 +7,7 @@ interface SplashScreenProps {
 export default function SplashScreen({ onComplete }: SplashScreenProps) {
   const [visible, setVisible] = useState(true);
   const [fadeOut, setFadeOut] = useState(false);
+  const [logoError, setLogoError] = useState(false);
 
   useEffect(() => {
     const fadeTimer = setTimeout(() => setFadeOut(true), 2000);
@@ -37,6 +38,18 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
         alt=""
         className="absolute inset-0 w-full h-full object-cover"
         aria-hidden="true"
+        onError={(e) => {
+          // Fallback: dark gradient background
+          (e.currentTarget as HTMLImageElement).style.display = "none";
+        }}
+      />
+      {/* Fallback background if image fails */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "linear-gradient(160deg, oklch(0.10 0.04 255) 0%, oklch(0.06 0.02 255) 60%, oklch(0.08 0.05 30) 100%)",
+        }}
       />
       {/* Dark overlay for contrast */}
       <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/20 to-black/70" />
@@ -51,11 +64,35 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
             animationDelay: "0.2s",
           }}
         >
-          <img
-            src="/assets/generated/fansbattle-logo-transparent.dim_600x600.png"
-            alt="FansBattle Logo"
-            className="w-44 h-44 drop-shadow-[0_0_32px_rgba(251,191,36,0.9)]"
-          />
+          {logoError ? (
+            // Text-based fallback logo when image fails to load
+            <div
+              className="w-44 h-44 flex items-center justify-center rounded-full"
+              style={{
+                background:
+                  "linear-gradient(135deg, oklch(0.55 0.22 50), oklch(0.45 0.20 30))",
+                boxShadow:
+                  "0 0 40px oklch(0.6 0.22 50 / 0.6), 0 0 80px oklch(0.5 0.18 50 / 0.3)",
+              }}
+            >
+              <span
+                className="text-5xl font-black"
+                style={{
+                  color: "white",
+                  textShadow: "0 2px 8px rgba(0,0,0,0.5)",
+                }}
+              >
+                FB
+              </span>
+            </div>
+          ) : (
+            <img
+              src="/assets/generated/fansbattle-logo-transparent.dim_600x600.png"
+              alt="FansBattle Logo"
+              className="w-44 h-44 drop-shadow-[0_0_32px_rgba(251,191,36,0.9)]"
+              onError={() => setLogoError(true)}
+            />
+          )}
           <h1
             className="text-white font-black text-4xl mt-2 tracking-widest uppercase"
             style={{
@@ -87,6 +124,9 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
           alt="Five cricket captains"
           className="w-full object-contain"
           style={{ maxHeight: "180px" }}
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).style.display = "none";
+          }}
         />
       </div>
 
