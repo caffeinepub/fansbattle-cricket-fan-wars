@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 
 const API_KEY = "4936fea0-ba32-4484-81de-8ca82f6501f6";
-const REFRESH_INTERVAL = 15000;
+const REFRESH_INTERVAL = 300000; // 5 minutes — avoids exhausting free-tier quota
 
 export interface ApiScore {
   r: number;
@@ -26,6 +26,30 @@ export interface ApiMatch {
 interface ApiResponse {
   data: ApiMatch[];
   status: string;
+  message?: string;
+  info?: unknown;
+  error?: string;
+}
+
+function resolveApiErrorMessage(json: ApiResponse): string {
+  const raw = (json.message ?? json.error ?? "").toLowerCase();
+  if (
+    raw.includes("quota") ||
+    raw.includes("limit") ||
+    raw.includes("exceed")
+  ) {
+    return "API quota exceeded. The daily limit for this CricAPI key has been reached. Matches will load again after midnight.";
+  }
+  if (
+    raw.includes("invalid") ||
+    raw.includes("key") ||
+    raw.includes("auth") ||
+    raw.includes("unauthorized")
+  ) {
+    return "Invalid API key. Please verify the key is active at cricapi.com.";
+  }
+  const display = json.message ?? json.error ?? json.status ?? "Unknown error";
+  return `API error: ${display}`;
 }
 
 function formatScore(score?: ApiScore[]): { a: string; b: string } {
@@ -72,7 +96,6 @@ function MatchCard({
         boxShadow: isLive ? "0 0 16px oklch(0.55 0.2 150 / 0.18)" : "none",
       }}
     >
-      {/* Live badge */}
       {isLive && (
         <div className="flex items-center gap-1.5 mb-2">
           <span className="relative flex h-2 w-2">
@@ -94,7 +117,6 @@ function MatchCard({
         </div>
       )}
 
-      {/* Teams */}
       <div className="flex items-center justify-between gap-2 mb-3">
         <div className="flex-1 min-w-0">
           <p className="font-display font-bold text-foreground text-sm truncate">
@@ -129,7 +151,6 @@ function MatchCard({
         </div>
       </div>
 
-      {/* Status */}
       <p
         className="text-xs truncate mb-2"
         style={{ color: "oklch(0.6 0.06 255)" }}
@@ -137,7 +158,6 @@ function MatchCard({
         {match.status}
       </p>
 
-      {/* CTA */}
       <div
         className="text-xs font-semibold text-right"
         style={{
@@ -158,39 +178,92 @@ export default function HomeTab({ onMatchSelect }: Props) {
   const [matches, setMatches] = useState<ApiMatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [isQuotaError, setIsQuotaError] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   const fetchMatches = useCallback(async () => {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const res = await fetch(
-        `https://api.cricapi.com/v1/currentMatches?apikey=${API_KEY}&offset=0`,
-        { signal: controller.signal },
-      );
+      let res: Response;
+      try {
+        res = await fetch(
+          `https://api.cricapi.com/v1/currentMatches?apikey=${API_KEY}&offset=0`,
+          { signal: controller.signal },
+        );
+      } catch (fetchErr) {
+        const msg =
+          fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+        const isCors =
+          msg.toLowerCase().includes("cors") ||
+          msg.toLowerCase().includes("failed to fetch") ||
+          msg.toLowerCase().includes("network");
+        setError(
+          isCors
+            ? "CORS or network error — API blocked by browser. Check your connection."
+            : `Network error: ${msg}`,
+        );
+        setIsQuotaError(false);
+        setLoading(false);
+        return;
+      }
       clearTimeout(timeoutId);
 
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      if (!res.ok) {
+        setError(`HTTP error ${res.status}`);
+        setIsQuotaError(false);
+        setLoading(false);
+        return;
+      }
+
       const json: ApiResponse = await res.json();
 
-      if (json.status !== "success") {
-        throw new Error(json.status || "API returned non-success");
+      // ── Explicit failure status — parse and display the real message ──
+      if (json.status === "failure") {
+        const msg = resolveApiErrorMessage(json);
+        const isQuota =
+          msg.toLowerCase().includes("quota") ||
+          msg.toLowerCase().includes("midnight");
+        setError(msg);
+        setIsQuotaError(isQuota);
+        setLoading(false);
+        return;
+      }
+
+      // ── Accept both "success" and "ok" ──
+      const knownSuccess = ["success", "ok"].includes(
+        (json.status ?? "").toLowerCase(),
+      );
+      if (!knownSuccess && !json.data) {
+        setError(`API returned status: ${json.status}`);
+        setIsQuotaError(false);
+        setLoading(false);
+        return;
       }
 
       if (!json.data || !Array.isArray(json.data)) {
         setMatches([]);
-      } else {
-        setMatches(json.data.filter((m) => !m.matchEnded));
+        setError(null);
+        setIsQuotaError(false);
+        setLastUpdated(new Date().toLocaleTimeString());
+        setLoading(false);
+        return;
       }
+
+      const all = json.data.filter((m) => !m.matchEnded);
+      setMatches(all);
       setError(null);
-      setLastUpdated(new Date());
+      setIsQuotaError(false);
+      setLastUpdated(new Date().toLocaleTimeString());
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       if (err instanceof Error && err.name === "AbortError") {
         setError("Request timed out. Check your connection.");
       } else {
-        setError("Failed to load matches. Check your connection.");
+        setError(`Error: ${msg}`);
       }
+      setIsQuotaError(false);
     } finally {
       setLoading(false);
     }
@@ -218,7 +291,7 @@ export default function HomeTab({ onMatchSelect }: Props) {
             borderTopColor: "transparent",
           }}
         />
-        <p className="text-sm text-muted-foreground">Loading matches...</p>
+        <p className="text-sm text-muted-foreground">Fetching matches...</p>
       </div>
     );
   }
@@ -228,9 +301,9 @@ export default function HomeTab({ onMatchSelect }: Props) {
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        className="py-4 space-y-6"
+        className="py-4 space-y-4"
       >
-        {/* Live Matches */}
+        {/* ── Live Matches ─────────────────────────────────────────── */}
         <section data-ocid="home.live_matches.section">
           <div className="flex items-center gap-2 mb-3 px-4">
             <span className="relative flex h-2.5 w-2.5">
@@ -269,21 +342,43 @@ export default function HomeTab({ onMatchSelect }: Props) {
                   border: "1px solid oklch(0.45 0.15 15 / 0.4)",
                 }}
               >
-                <p className="text-xl mb-2">⚠️</p>
-                <p className="text-sm text-muted-foreground mb-3">{error}</p>
-                <button
-                  type="button"
-                  data-ocid="home.retry.button"
-                  onClick={fetchMatches}
-                  className="text-xs font-bold px-4 py-2 rounded-full transition-all"
-                  style={{
-                    background: "oklch(0.65 0.18 220 / 0.2)",
-                    color: "oklch(0.75 0.12 220)",
-                    border: "1px solid oklch(0.65 0.18 220 / 0.4)",
-                  }}
+                <p className="text-2xl mb-2">{isQuotaError ? "🚫" : "⚠️"}</p>
+                <p
+                  className="text-sm mb-3"
+                  style={{ color: "oklch(0.75 0.05 255)" }}
                 >
-                  Retry
-                </button>
+                  {error}
+                </p>
+                {!isQuotaError && (
+                  <a
+                    href="https://cricapi.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-block text-xs font-bold px-4 py-1.5 rounded-full mb-2"
+                    style={{
+                      background: "oklch(0.55 0.15 220 / 0.2)",
+                      color: "oklch(0.7 0.12 220)",
+                      border: "1px solid oklch(0.55 0.15 220 / 0.4)",
+                    }}
+                  >
+                    Check cricapi.com
+                  </a>
+                )}
+                <div>
+                  <button
+                    type="button"
+                    data-ocid="home.retry.button"
+                    onClick={fetchMatches}
+                    className="text-xs font-bold px-4 py-2 rounded-full transition-all"
+                    style={{
+                      background: "oklch(0.65 0.18 220 / 0.2)",
+                      color: "oklch(0.75 0.12 220)",
+                      border: "1px solid oklch(0.65 0.18 220 / 0.4)",
+                    }}
+                  >
+                    Retry
+                  </button>
+                </div>
               </div>
             </div>
           ) : liveMatches.length === 0 ? (
@@ -338,87 +433,100 @@ export default function HomeTab({ onMatchSelect }: Props) {
           )}
         </section>
 
-        {/* Upcoming Matches */}
-        <section data-ocid="home.upcoming_matches.section">
-          <div className="flex items-center gap-2 mb-3 px-4">
-            <span className="text-base">📅</span>
-            <h2 className="font-display font-bold text-foreground text-base">
-              Upcoming Matches
-            </h2>
-            {upcomingMatches.length > 0 && (
-              <span
-                className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                style={{
-                  background: "oklch(0.55 0.12 220 / 0.2)",
-                  color: "oklch(0.65 0.12 220)",
-                }}
-              >
-                {upcomingMatches.length}
-              </span>
-            )}
-          </div>
-
-          {upcomingMatches.length === 0 ? (
-            <div className="px-4">
-              <div
-                data-ocid="home.upcoming.empty_state"
-                className="rounded-2xl p-5 text-center"
-                style={{
-                  background: "oklch(0.17 0.03 255)",
-                  border: "1px solid oklch(0.25 0.04 255 / 0.4)",
-                }}
-              >
-                <p className="text-sm text-muted-foreground">
-                  No upcoming matches
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div
-              data-ocid="home.upcoming.scroll_row"
-              style={{
-                display: "flex",
-                flexDirection: "row",
-                flexWrap: "nowrap",
-                gap: "12px",
-                overflowX: "auto",
-                overflowY: "hidden",
-                paddingLeft: "16px",
-                paddingRight: "16px",
-                paddingBottom: "8px",
-                scrollSnapType: "x mandatory",
-                WebkitOverflowScrolling: "touch",
-                scrollbarWidth: "none",
-                msOverflowStyle: "none",
-              }}
-            >
-              {upcomingMatches.map((match, i) => (
-                <div
-                  key={match.id}
-                  data-ocid={`home.upcoming.item.${i + 1}`}
-                  style={{ flexShrink: 0 }}
+        {/* ── Upcoming Matches ─────────────────────────────────────── */}
+        {!error && (
+          <section data-ocid="home.upcoming_matches.section">
+            <div className="flex items-center gap-2 mb-3 px-4">
+              <span className="text-base">📅</span>
+              <h2 className="font-display font-bold text-foreground text-base">
+                Upcoming Matches
+              </h2>
+              {upcomingMatches.length > 0 && (
+                <span
+                  className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                  style={{
+                    background: "oklch(0.55 0.12 220 / 0.2)",
+                    color: "oklch(0.65 0.12 220)",
+                  }}
                 >
-                  <MatchCard
-                    match={match}
-                    isLive={false}
-                    onSelect={() => onMatchSelect(match)}
-                  />
-                </div>
-              ))}
+                  {upcomingMatches.length}
+                </span>
+              )}
             </div>
-          )}
-        </section>
+
+            {upcomingMatches.length === 0 ? (
+              <div className="px-4">
+                <div
+                  data-ocid="home.upcoming.empty_state"
+                  className="rounded-2xl p-5 text-center"
+                  style={{
+                    background: "oklch(0.17 0.03 255)",
+                    border: "1px solid oklch(0.25 0.04 255 / 0.4)",
+                  }}
+                >
+                  <p className="text-sm text-muted-foreground">
+                    No upcoming matches
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div
+                data-ocid="home.upcoming.scroll_row"
+                style={{
+                  display: "flex",
+                  flexDirection: "row",
+                  flexWrap: "nowrap",
+                  gap: "12px",
+                  overflowX: "auto",
+                  overflowY: "hidden",
+                  paddingLeft: "16px",
+                  paddingRight: "16px",
+                  paddingBottom: "8px",
+                  scrollSnapType: "x mandatory",
+                  WebkitOverflowScrolling: "touch",
+                  scrollbarWidth: "none",
+                  msOverflowStyle: "none",
+                }}
+              >
+                {upcomingMatches.map((match, i) => (
+                  <div
+                    key={match.id}
+                    data-ocid={`home.upcoming.item.${i + 1}`}
+                    style={{ flexShrink: 0 }}
+                  >
+                    <MatchCard
+                      match={match}
+                      isLive={false}
+                      onSelect={() => onMatchSelect(match)}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Footer */}
-        <div className="text-center pb-2 space-y-1">
-          <p className="text-xs text-muted-foreground/50">
-            Auto-refreshes every 15s
-          </p>
+        <div className="text-center pb-2 px-4 space-y-1">
           {lastUpdated && (
-            <p className="text-[10px] text-muted-foreground/30">
-              Last updated: {lastUpdated.toLocaleTimeString()}
+            <p
+              className="text-[10px] font-semibold px-3 py-1 rounded-full inline-block"
+              style={{
+                background: "oklch(0.55 0.15 150 / 0.15)",
+                color: "oklch(0.6 0.12 150)",
+              }}
+            >
+              Updated at {lastUpdated} · auto-refreshes every 5 min
             </p>
           )}
+          <button
+            type="button"
+            onClick={fetchMatches}
+            className="block mx-auto text-xs mt-2"
+            style={{ color: "oklch(0.55 0.08 255)" }}
+          >
+            Tap to refresh
+          </button>
         </div>
       </motion.div>
     </AnimatePresence>
