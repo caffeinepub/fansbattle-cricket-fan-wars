@@ -89,7 +89,21 @@ export class ExternalBlob {
         return this;
     }
 }
+export interface http_request_result {
+    status: bigint;
+    body: Uint8Array;
+    headers: Array<http_header>;
+}
+export interface TransformationOutput {
+    status: bigint;
+    body: Uint8Array;
+    headers: Array<http_header>;
+}
 export type Time = bigint;
+export interface TransformationInput {
+    context: Uint8Array;
+    response: http_request_result;
+}
 export interface UserProfile {
     username?: string;
     joinDate: Time;
@@ -99,6 +113,10 @@ export interface UserProfile {
     favoriteTeam?: string;
     level: bigint;
     avatar: string;
+}
+export interface http_header {
+    value: string;
+    name: string;
 }
 export enum UserRole {
     admin = "admin",
@@ -115,6 +133,7 @@ export interface backendInterface {
         coins: bigint;
         level: bigint;
     }>;
+    fetchCricketMatches(): Promise<string>;
     findUserByMobileNumber(mobileNumber: string): Promise<Principal>;
     getAllUsers(): Promise<Array<UserProfile>>;
     getCallerUserProfile(): Promise<UserProfile | null>;
@@ -125,6 +144,7 @@ export interface backendInterface {
     isCallerAdmin(): Promise<boolean>;
     isProfileComplete(userPrincipal: Principal): Promise<boolean>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
+    transform(input: TransformationInput): Promise<TransformationOutput>;
     updateUserProfile(userPrincipal: Principal, username: string | null, favoriteTeam: string | null, avatar: string): Promise<void>;
 }
 import type { Time as _Time, UserProfile as _UserProfile, UserRole as _UserRole } from "./declarations/backend.did.d.ts";
@@ -188,6 +208,20 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.createUser(arg0);
+            return result;
+        }
+    }
+    async fetchCricketMatches(): Promise<string> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.fetchCricketMatches();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.fetchCricketMatches();
             return result;
         }
     }
@@ -328,6 +362,20 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.saveCallerUserProfile(to_candid_UserProfile_n10(this._uploadFile, this._downloadFile, arg0));
+            return result;
+        }
+    }
+    async transform(arg0: TransformationInput): Promise<TransformationOutput> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.transform(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.transform(arg0);
             return result;
         }
     }

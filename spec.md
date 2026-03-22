@@ -1,46 +1,28 @@
 # FansBattle – Cricket Fan Wars
 
 ## Current State
-- Bottom nav has 5+ tabs: Live Match, Vote Battle, Stickers, Friends, Shop
-- Header has logout button + coin balance
-- Firestore may use random document IDs instead of deviceId as doc ID
-- Daily reward uses localStorage for claim tracking instead of pure Firestore transactions
-- Multiple unused tabs clutter the UI
+- Frontend calls CricAPI (`api.cricapi.com`) directly from the browser using a hardcoded API key in `cricketApi.ts`.
+- 10-minute `setInterval` auto-refresh is running in `HomeTab.tsx`.
+- In-memory cache (8-min TTL) exists in `cricketApi.ts` but only on the frontend.
 
 ## Requested Changes (Diff)
 
 ### Add
-- Profile tab (bottom nav, second tab) with: username, coins balance, user ID, Shop section, Logout button
-- Home tab with two sections: "Live Matches" and "Upcoming Matches"
-- Auto-refresh every 15 seconds for match data
-- Clicking a match opens a detail/guess panel
-- Coin balance in header is clickable → opens shop modal
-- Shop accessible from Profile screen and by tapping coin balance in header
+- Motoko HTTP outcall endpoint `getMatches()` in `main.mo` that proxies CricAPI calls server-side with API key stored in backend only.
+- Backend in-memory cache (7-minute TTL) in Motoko to reduce API quota usage.
+- Frontend `backendApi.ts` helper that calls the canister `getMatches()` endpoint.
 
 ### Modify
-- Bottom nav: reduce to 2 tabs only — Home and Profile
-- Header: remove logout button, keep only coin balance (clickable)
-- Home tab (renamed from "Live Match"): show live matches + upcoming matches from CricAPI
-- Firestore user document: use `users/{deviceId}` (deviceId as doc ID, not random)
-- On app start: check if `users/{deviceId}` exists; if not, create with coins:10, lastClaimDate:""
-- All coin updates: use Firestore runTransaction (never direct overwrite)
-- Daily reward: compare today's date (YYYY-MM-DD) with lastClaimDate from Firestore; add +5 coins via transaction; update lastClaimDate after success; block if already claimed
-- UI only updates after Firestore success; show error if Firestore fails
+- `cricketApi.ts`: Remove direct `fetch()` to CricAPI. Replace with a call to the backend canister. Keep frontend-side cache (8-min TTL) as a secondary layer to avoid redundant canister calls.
+- `HomeTab.tsx`: Remove all `setInterval` / auto-refresh logic. Fetch on initial mount only, plus manual "Refresh Now" button. Update cache label to remove "auto-refreshes every 10 min" text.
 
 ### Remove
-- Vote Battle tab
-- Stickers tab
-- Friends tab
-- Shop from bottom navigation (move to Profile + header coin tap)
-- Logout from header
-- All dummy/hardcoded UI elements and fake data
+- `CRICKET_API_KEY` export from frontend — API key must never appear in frontend code.
+- `REFRESH_INTERVAL_MS` constant and the `useEffect` that sets up `setInterval` in `HomeTab.tsx`.
+- `intervalRef` from `HomeTab.tsx`.
 
 ## Implementation Plan
-1. Rewrite `lib/firestore.ts`: ensure user doc uses deviceId as Firestore document ID; fix `claimDailyReward` to use `runTransaction` with date comparison; fix all coin updates to use transactions
-2. Rewrite `context/UserContext.tsx`: ensure `createOrGetUser` writes to `users/{deviceId}`; subscribe to `users/{deviceId}` via onSnapshot
-3. Rewrite `components/BottomNav.tsx`: 2 tabs only — Home, Profile
-4. Rewrite `components/Header.tsx`: remove logout, coin balance clickable to open shop
-5. Rewrite `components/tabs/LiveMatch.tsx` → rename logic to Home tab: two sections (Live Matches, Upcoming Matches) with auto-refresh; each match clickable
-6. Create `components/tabs/Profile.tsx`: username, coins, user ID, shop section (inline or modal), logout button
-7. Rewrite `App.tsx`: remove all unused tabs/modals, wire up 2-tab navigation, pass shop open handler via coin tap in header
-8. Delete or ignore: VoteBattle, StickerCreator, FriendsRoom components (no longer rendered)
+1. Select `http-outcalls` Caffeine component.
+2. Generate Motoko backend with `getMatches()` HTTP outcall to CricAPI, 7-min cache, proper error handling.
+3. Update `cricketApi.ts` to call backend canister via `window.ic` / actor, remove API key and direct fetch.
+4. Update `HomeTab.tsx` to remove setInterval and auto-refresh, only load on mount + manual button.

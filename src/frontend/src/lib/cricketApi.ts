@@ -1,12 +1,10 @@
-// ─── CricAPI Configuration ───────────────────────────────────────────────────
-// Updated to paid plan key — do NOT call the API directly from multiple places.
-// All calls must go through fetchMatchesWithCache() to respect the cache.
-export const CRICKET_API_KEY = "76e4e258-7898-4311-ace0-4196d49df2b7";
-
-const API_BASE = "https://api.cricapi.com/v1";
+// ─── Cricket API via Backend Proxy ───────────────────────────────────────────
+// All CricketData API requests are routed through the Motoko backend canister
+// using HTTP outcalls. The API key never touches the browser.
+import { createActorWithConfig } from "../config";
 
 // ─── Cache (in-memory, 8-minute TTL) ─────────────────────────────────────────
-// Prevents multiple users / tab re-renders from hammering the paid quota.
+// Prevents multiple renders / manual refreshes from hammering the canister.
 const CACHE_TTL_MS = 8 * 60 * 1000; // 8 minutes
 
 interface CacheEntry {
@@ -87,10 +85,9 @@ function resolveApiErrorMessage(json: ApiResponse): string {
   return `API error: ${display}`;
 }
 
-// ─── Main fetch (cache-first) ─────────────────────────────────────────────────
-// NOTE: This is a temporary direct-fetch approach. When the backend proxy
-// (Motoko HTTP outcall) is ready, replace the fetch() call below with a
-// call to the canister endpoint and the cache will still work identically.
+// ─── Main fetch (cache-first, via backend canister) ───────────────────────────
+// fetchMatchesWithCache() is the single entry point for all match data.
+// It never calls CricketData API directly — the canister does that securely.
 export async function fetchMatchesWithCache(
   forceRefresh = false,
 ): Promise<FetchResult> {
@@ -105,42 +102,10 @@ export async function fetchMatchesWithCache(
   }
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const actor = await createActorWithConfig();
+    const rawJson = await actor.fetchCricketMatches();
 
-    let res: Response;
-    try {
-      res = await fetch(
-        `${API_BASE}/currentMatches?apikey=${CRICKET_API_KEY}&offset=0`,
-        { signal: controller.signal },
-      );
-    } catch (fetchErr) {
-      clearTimeout(timeoutId);
-      const msg =
-        fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-      const isCors =
-        msg.toLowerCase().includes("cors") ||
-        msg.toLowerCase().includes("failed to fetch") ||
-        msg.toLowerCase().includes("network");
-      return {
-        ok: false,
-        errorMessage: isCors
-          ? "Network error — check your internet connection."
-          : `Network error: ${msg}`,
-        isQuota: false,
-      };
-    }
-    clearTimeout(timeoutId);
-
-    if (!res.ok) {
-      return {
-        ok: false,
-        errorMessage: `HTTP error ${res.status}`,
-        isQuota: false,
-      };
-    }
-
-    const json: ApiResponse = await res.json();
+    const json: ApiResponse = JSON.parse(rawJson);
 
     if (json.status === "failure") {
       const errorMessage = resolveApiErrorMessage(json);
@@ -167,13 +132,6 @@ export async function fetchMatchesWithCache(
 
     return { ok: true, matches: all, fromCache: false, fetchedAt };
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      return {
-        ok: false,
-        errorMessage: "Request timed out. Check your connection.",
-        isQuota: false,
-      };
-    }
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, errorMessage: `Error: ${msg}`, isQuota: false };
   }

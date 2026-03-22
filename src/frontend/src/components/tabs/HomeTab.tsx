@@ -1,14 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  type ApiMatch,
-  fetchMatchesWithCache,
-  getCacheAge,
-  isCacheValid,
-} from "../../lib/cricketApi";
-
-// ─── Auto-refresh every 10 minutes to protect paid API quota ──────────────────
-const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+import { useCallback, useEffect, useState } from "react";
+import { type ApiMatch, fetchMatchesWithCache } from "../../lib/cricketApi";
 
 export type { ApiMatch };
 export type { ApiScore } from "../../lib/cricketApi";
@@ -145,7 +137,6 @@ export default function HomeTab({ onMatchSelect }: Props) {
   const [isQuotaError, setIsQuotaError] = useState(false);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const [fromCache, setFromCache] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadMatches = useCallback(async (force = false) => {
     const result = await fetchMatchesWithCache(force);
@@ -162,20 +153,9 @@ export default function HomeTab({ onMatchSelect }: Props) {
     }
   }, []);
 
-  // Initial load
+  // Initial load on mount only — no auto-refresh / polling
   useEffect(() => {
     loadMatches(false).finally(() => setLoading(false));
-  }, [loadMatches]);
-
-  // Auto-refresh every 10 minutes (respects cache — only hits API if cache expired)
-  useEffect(() => {
-    intervalRef.current = setInterval(
-      () => loadMatches(false),
-      REFRESH_INTERVAL_MS,
-    );
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
   }, [loadMatches]);
 
   const handleManualRefresh = useCallback(async () => {
@@ -432,7 +412,7 @@ export default function HomeTab({ onMatchSelect }: Props) {
                 color: "oklch(0.6 0.12 150)",
               }}
             >
-              {cacheLabel} · auto-refreshes every 10 min
+              {cacheLabel} · tap Refresh to update
             </p>
           )}
           <div>

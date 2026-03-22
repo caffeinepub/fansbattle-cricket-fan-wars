@@ -11,6 +11,15 @@ import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
 export type Time = bigint;
+export interface TransformationInput {
+  'context' : Uint8Array,
+  'response' : http_request_result,
+}
+export interface TransformationOutput {
+  'status' : bigint,
+  'body' : Uint8Array,
+  'headers' : Array<http_header>,
+}
 export interface UserProfile {
   'username' : [] | [string],
   'joinDate' : Time,
@@ -24,6 +33,12 @@ export interface UserProfile {
 export type UserRole = { 'admin' : null } |
   { 'user' : null } |
   { 'guest' : null };
+export interface http_header { 'value' : string, 'name' : string }
+export interface http_request_result {
+  'status' : bigint,
+  'body' : Uint8Array,
+  'headers' : Array<http_header>,
+}
 export interface _SERVICE {
   '_initializeAccessControlWithSecret' : ActorMethod<[string], undefined>,
   'addCoins' : ActorMethod<[Principal, bigint], undefined>,
@@ -32,6 +47,7 @@ export interface _SERVICE {
     [string],
     { 'joinDate' : Time, 'userId' : string, 'coins' : bigint, 'level' : bigint }
   >,
+  'fetchCricketMatches' : ActorMethod<[], string>,
   'findUserByMobileNumber' : ActorMethod<[string], Principal>,
   'getAllUsers' : ActorMethod<[], Array<UserProfile>>,
   'getCallerUserProfile' : ActorMethod<[], [] | [UserProfile]>,
@@ -42,6 +58,7 @@ export interface _SERVICE {
   'isCallerAdmin' : ActorMethod<[], boolean>,
   'isProfileComplete' : ActorMethod<[Principal], boolean>,
   'saveCallerUserProfile' : ActorMethod<[UserProfile], undefined>,
+  'transform' : ActorMethod<[TransformationInput], TransformationOutput>,
   'updateUserProfile' : ActorMethod<
     [Principal, [] | [string], [] | [string], string],
     undefined

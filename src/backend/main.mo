@@ -7,7 +7,10 @@ import Runtime "mo:core/Runtime";
 import Principal "mo:core/Principal";
 import MixinAuthorization "authorization/MixinAuthorization";
 import AccessControl "authorization/access-control";
+import OutCall "http-outcalls/outcall";
+import Migration "migration";
 
+(with migration = Migration.run)
 actor {
   // Access control state
   let accessControlState = AccessControl.initState();
@@ -214,5 +217,34 @@ actor {
       case (null) { Runtime.trap("User not found") };
       case (?userPrincipal) { userPrincipal };
     };
+  };
+
+  var lastApiResponse : Text = "";
+  var lastApiCallTime : Time.Time = 0;
+
+  // Fetch current cricket matches from external API (with caching) - authenticated users only
+  public shared ({ caller }) func fetchCricketMatches() : async Text {
+    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
+      Runtime.trap("Unauthorized: Only authenticated users can fetch cricket matches");
+    };
+
+    let now = Time.now();
+    if (now < (lastApiCallTime + 420_000_000_000)) {
+      return lastApiResponse;
+    };
+
+    // Make the outcall request
+    let url = "https://api.cricapi.com/v1/currentMatches?apikey=76e4e258-7898-4311-ace0-4196d49df2b7&offset=0";
+    let response = await OutCall.httpGetRequest(url, [], transform);
+
+    // Store the response
+    lastApiResponse := response;
+    lastApiCallTime := now;
+
+    response;
+  };
+
+  public query ({ caller }) func transform(input : OutCall.TransformationInput) : async OutCall.TransformationOutput {
+    OutCall.transform(input);
   };
 };
